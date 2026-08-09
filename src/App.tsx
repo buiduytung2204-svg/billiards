@@ -19,26 +19,13 @@ export default function App() {
   // Auth & Staff State
   const [activeStaff, setActiveStaff] = useState<Staff | null>(() => {
     const saved = localStorage.getItem('billiard_active_staff');
-    if (saved === 'null') {
-      return null;
-    }
-    if (saved) {
+    if (saved && saved !== 'null') {
       try {
         const parsed = JSON.parse(saved);
         if (parsed) return parsed;
       } catch (e) {}
     }
-    const defaultAdmin: Staff = {
-      staffid: 1,
-      username: 'admin',
-      password: '123',
-      fullname: 'Nguyễn Văn Minh (Quản lý)',
-      role: 'Manager',
-      phone: '0901234567',
-      status: 'Active',
-    };
-    localStorage.setItem('billiard_active_staff', JSON.stringify(defaultAdmin));
-    return defaultAdmin;
+    return null;
   });
   const [showLoginModal, setShowLoginModal] = useState<boolean>(false);
   const [staffs, setStaffs] = useState<Staff[]>([]);
@@ -272,7 +259,7 @@ export default function App() {
       </main>
 
       {/* Modals */}
-      {showLoginModal && (
+      {(showLoginModal || !activeStaff) && (
         <LoginModal
           staffs={staffs}
           onSuccessLogin={(staff) => {
@@ -280,7 +267,7 @@ export default function App() {
             localStorage.setItem('billiard_active_staff', JSON.stringify(staff));
             setShowLoginModal(false);
           }}
-          onClose={() => setShowLoginModal(false)}
+          onClose={activeStaff ? () => setShowLoginModal(false) : undefined}
         />
       )}
       {selectedTableForDetail && (
