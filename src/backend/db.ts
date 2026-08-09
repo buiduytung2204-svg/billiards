@@ -11,7 +11,7 @@ import {
   TableStatus,
   InvoiceStatus,
   MembershipTier,
-} from '../types';
+} from '../types/index.js';
 import {
   INITIAL_CUSTOMERS,
   INITIAL_TABLES,
@@ -19,7 +19,7 @@ import {
   INITIAL_VOUCHERS,
   INITIAL_STAFFS,
   INITIAL_BOOKINGS,
-} from '../db/initialData';
+} from '../db/initialData.js';
 
 class BilliardDatabase {
   private customers: Customer[] = [];
