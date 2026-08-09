@@ -1,6 +1,0 @@
-{
-  "name": "Billiard Arena",
-  "description": "Hệ thống quản lý CLB Billiard Arena, POS sơ đồ bàn, quản lý kho & booking",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
