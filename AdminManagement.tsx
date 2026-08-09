@@ -18,7 +18,11 @@ import {
   Key,
   Layers,
   Sparkles,
-  Lock
+  Lock,
+  Database,
+  Copy,
+  Check,
+  RefreshCw
 } from 'lucide-react';
 
 interface AdminManagementProps {
@@ -38,7 +42,216 @@ export const AdminManagement: React.FC<AdminManagementProps> = ({
   activeStaff,
   onRefresh,
 }) => {
-  const [activeTab, setActiveTab] = useState<'tables' | 'products' | 'staffs' | 'vouchers' | 'vip'>('tables');
+  const [activeTab, setActiveTab] = useState<'tables' | 'products' | 'staffs' | 'vouchers' | 'vip' | 'supabase'>('tables');
+  const [supabaseStatus, setSupabaseStatus] = useState<any>(null);
+  const [checkingSupabase, setCheckingSupabase] = useState<boolean>(false);
+  const [copiedSql, setCopiedSql] = useState<boolean>(false);
+
+  const handleCheckSupabase = async () => {
+    setCheckingSupabase(true);
+    try {
+      const status = await api.getSupabaseStatus();
+      setSupabaseStatus(status);
+    } catch (err: any) {
+      setSupabaseStatus({ connected: false, message: err.message });
+    } finally {
+      setCheckingSupabase(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (activeTab === 'supabase') {
+      handleCheckSupabase();
+    }
+  }, [activeTab]);
+
+  const SQL_SCHEMA_CODE = `-- =========================================================
+-- BẢNG DỮ LIỆU CHUẨN CHO HỆ THỐNG QUẢN LÝ QUÁN BIDA (SUPABASE)
+-- Copy và dán toàn bộ đoạn mã này vào Supabase -> SQL Editor -> Run
+-- =========================================================
+
+-- 1. Bảng Nhân viên / Tài khoản (staffs)
+CREATE TABLE IF NOT EXISTS public.staffs (
+  staffid SERIAL PRIMARY KEY,
+  username TEXT UNIQUE NOT NULL,
+  password TEXT NOT NULL,
+  fullname TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'Staff',
+  phone TEXT,
+  status TEXT NOT NULL DEFAULT 'Active'
+);
+
+-- 2. Bảng Khách hàng (customers)
+CREATE TABLE IF NOT EXISTS public.customers (
+  customerid SERIAL PRIMARY KEY,
+  fullname TEXT NOT NULL,
+  phone TEXT UNIQUE NOT NULL,
+  email TEXT,
+  point INT DEFAULT 0,
+  createdat TIMESTAMPTZ DEFAULT NOW(),
+  membershiptier TEXT DEFAULT 'Bronze',
+  totalspent NUMERIC DEFAULT 0
+);
+
+-- 3. Bảng Hóa đơn (invoices)
+CREATE TABLE IF NOT EXISTS public.invoices (
+  invoiceid SERIAL PRIMARY KEY,
+  tableid INT NOT NULL,
+  customerid INT REFERENCES public.customers(customerid) ON DELETE SET NULL,
+  staffid INT DEFAULT 1,
+  starttime TIMESTAMPTZ DEFAULT NOW(),
+  endtime TIMESTAMPTZ,
+  playtime_minutes INT DEFAULT 0,
+  tablefee NUMERIC DEFAULT 0,
+  servicefee NUMERIC DEFAULT 0,
+  discountamount NUMERIC DEFAULT 0,
+  totalamount NUMERIC DEFAULT 0,
+  status TEXT DEFAULT 'Playing',
+  paymentmethod TEXT DEFAULT 'Cash',
+  createdat TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 4. Bảng Bàn bida (tables)
+CREATE TABLE IF NOT EXISTS public.tables (
+  tableid SERIAL PRIMARY KEY,
+  tablename TEXT NOT NULL,
+  tabletype TEXT DEFAULT 'Bàn Bida',
+  hourlyprice NUMERIC NOT NULL DEFAULT 70000,
+  status TEXT NOT NULL DEFAULT 'EMPTY',
+  zone TEXT DEFAULT 'Khu A',
+  current_invoice_id INT REFERENCES public.invoices(invoiceid) ON DELETE SET NULL
+);
+
+-- 5. Bảng Sản phẩm / Dịch vụ (products)
+CREATE TABLE IF NOT EXISTS public.products (
+  productid SERIAL PRIMARY KEY,
+  productname TEXT NOT NULL,
+  category TEXT NOT NULL,
+  price NUMERIC NOT NULL DEFAULT 0,
+  costprice NUMERIC NOT NULL DEFAULT 0,
+  unit TEXT DEFAULT 'Cái',
+  stock INT DEFAULT 0,
+  minstock INT DEFAULT 10,
+  isactive BOOLEAN DEFAULT TRUE
+);
+
+-- 6. Bảng Khuyến mãi / Voucher (vouchers)
+CREATE TABLE IF NOT EXISTS public.vouchers (
+  voucherid SERIAL PRIMARY KEY,
+  vouchercode TEXT UNIQUE NOT NULL,
+  discountamount NUMERIC NOT NULL DEFAULT 0,
+  discounttype TEXT DEFAULT 'Fixed',
+  minordervalue NUMERIC DEFAULT 0,
+  expirydate DATE DEFAULT '2026-12-31'
+);
+
+-- 7. Bảng Đặt bàn (bookings)
+CREATE TABLE IF NOT EXISTS public.bookings (
+  bookingid SERIAL PRIMARY KEY,
+  customername TEXT NOT NULL,
+  customerphone TEXT NOT NULL,
+  tableid INT REFERENCES public.tables(tableid) ON DELETE CASCADE,
+  bookingtime TIMESTAMPTZ NOT NULL,
+  note TEXT,
+  status TEXT DEFAULT 'Confirmed'
+);
+
+-- 8. Bảng Chi tiết hóa đơn (invoice_details)
+CREATE TABLE IF NOT EXISTS public.invoice_details (
+  detailid SERIAL PRIMARY KEY,
+  invoiceid INT REFERENCES public.invoices(invoiceid) ON DELETE CASCADE,
+  productid INT REFERENCES public.products(productid) ON DELETE SET NULL,
+  productname TEXT NOT NULL,
+  quantity INT DEFAULT 1,
+  unitprice NUMERIC DEFAULT 0,
+  totalprice NUMERIC DEFAULT 0
+);
+
+-- 9. Bảng Lịch sử nhập kho (stock_transactions)
+CREATE TABLE IF NOT EXISTS public.stock_transactions (
+  txid SERIAL PRIMARY KEY,
+  productid INT REFERENCES public.products(productid) ON DELETE SET NULL,
+  productname TEXT NOT NULL,
+  type TEXT NOT NULL,
+  quantity INT NOT NULL,
+  costprice NUMERIC NOT NULL,
+  createdat TIMESTAMPTZ DEFAULT NOW(),
+  note TEXT
+);
+
+-- 10. Bảng Cấu hình giảm giá VIP (vip_discount_rates)
+CREATE TABLE IF NOT EXISTS public.vip_discount_rates (
+  id INT PRIMARY KEY DEFAULT 1,
+  bronze INT DEFAULT 0,
+  silver INT DEFAULT 5,
+  gold INT DEFAULT 10,
+  platinum INT DEFAULT 15
+);
+
+-- TẮT BẢO MẬT RLS ĐỂ CHO PHÉP API ĐỌC GHI DỮ LIỆU
+ALTER TABLE public.staffs DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.customers DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tables DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.products DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.vouchers DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.bookings DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.invoices DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.invoice_details DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.stock_transactions DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.vip_discount_rates DISABLE ROW LEVEL SECURITY;
+
+-- DỮ LIỆU MẪU BAN ĐẦU
+INSERT INTO public.staffs (staffid, username, password, fullname, role, phone, status)
+VALUES (1, 'admin', '123', 'Nguyễn Văn Minh (Quản lý)', 'Manager', '0901234567', 'Active') ON CONFLICT (username) DO NOTHING;
+
+INSERT INTO public.customers (customerid, fullname, phone, email, point, createdat, membershiptier, totalspent)
+VALUES 
+  (1, 'Phạm Đức Anh', '0988111222', 'ducanh@gmail.com', 320, '2026-01-15T08:00:00Z', 'Gold', 4800000),
+  (2, 'Nguyễn Thanh Tùng', '0977333444', 'thanhtung@gmail.com', 150, '2026-02-10T10:30:00Z', 'Silver', 2100000)
+ON CONFLICT (phone) DO NOTHING;
+
+INSERT INTO public.tables (tableid, tablename, tabletype, hourlyprice, status, zone)
+VALUES 
+  (1, 'Bàn 1', 'Bàn Bida', 70000, 'EMPTY', 'Khu A'),
+  (2, 'Bàn 2', 'Bàn Bida', 70000, 'EMPTY', 'Khu A'),
+  (3, 'Bàn 3', 'Bàn Bida', 70000, 'EMPTY', 'Khu A'),
+  (4, 'Bàn 4', 'Bàn Bida', 70000, 'EMPTY', 'Khu A'),
+  (5, 'Bàn 5', 'Bàn Bida', 80000, 'EMPTY', 'Khu B'),
+  (6, 'Bàn 6', 'Bàn Bida', 80000, 'EMPTY', 'Khu B'),
+  (7, 'Bàn 7', 'Bàn Bida', 80000, 'EMPTY', 'Khu B'),
+  (8, 'Bàn 8', 'Bàn Bida', 80000, 'EMPTY', 'Khu B'),
+  (9, 'Bàn 9', 'Bàn Bida', 120000, 'EMPTY', 'Phòng VIP'),
+  (10, 'Bàn 10', 'Bàn Bida', 120000, 'EMPTY', 'Phòng VIP'),
+  (11, 'Bàn 11', 'Bàn Bida', 120000, 'EMPTY', 'Phòng VIP'),
+  (12, 'Bàn 12', 'Bàn Bida', 150000, 'EMPTY', 'Phòng VIP')
+ON CONFLICT (tableid) DO NOTHING;
+
+INSERT INTO public.products (productid, productname, category, price, costprice, unit, stock, minstock, isactive)
+VALUES 
+  (1, 'Cà phê đá', 'Nước uống', 25000, 8000, 'Ly', 150, 20, true),
+  (2, 'Cà phê sữa đá', 'Nước uống', 30000, 10000, 'Ly', 140, 20, true),
+  (3, 'Sting đỏ / dâu', 'Nước uống', 20000, 9000, 'Chai', 85, 24, true),
+  (4, 'RedBull Thái', 'Nước uống', 25000, 12000, 'Lon', 60, 12, true),
+  (5, 'Nước suối Aquafina 500ml', 'Nước uống', 12000, 4500, 'Chai', 200, 30, true),
+  (6, 'Mì xào bò đặc biệt', 'Đồ ăn', 45000, 22000, 'Đĩa', 40, 10, true),
+  (7, 'Cơm chiên hải sản', 'Đồ ăn', 50000, 25000, 'Đĩa', 35, 10, true),
+  (8, 'Cá viên chiên bida set', 'Đồ ăn', 35000, 15000, 'Đĩa', 50, 15, true)
+ON CONFLICT (productid) DO NOTHING;
+
+INSERT INTO public.vouchers (voucherid, vouchercode, discountamount, discounttype, minordervalue, expirydate)
+VALUES 
+  (1, 'BIDA50K', 50000, 'Fixed', 200000, '2026-12-31'),
+  (2, 'VIP100K', 100000, 'Fixed', 400000, '2026-12-31')
+ON CONFLICT (vouchercode) DO NOTHING;
+
+INSERT INTO public.vip_discount_rates (id, bronze, silver, gold, platinum)
+VALUES (1, 0, 5, 10, 15) ON CONFLICT (id) DO NOTHING;`;
+
+  const handleCopySql = () => {
+    navigator.clipboard.writeText(SQL_SCHEMA_CODE);
+    setCopiedSql(true);
+    setTimeout(() => setCopiedSql(false), 3000);
+  };
   
   // VIP Rates state
   const [vipRates, setVipRates] = useState<Record<string, number>>({
@@ -328,6 +541,18 @@ export const AdminManagement: React.FC<AdminManagementProps> = ({
         >
           <Sparkles className="w-4 h-4" />
           <span>Giảm Giá Giờ Chơi VIP</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('supabase')}
+          className={`flex items-center space-x-2 px-4 py-2.5 rounded-xl text-xs font-bold transition ${
+            activeTab === 'supabase'
+              ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
+              : 'bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800'
+          }`}
+        >
+          <Database className="w-4 h-4" />
+          <span>Cơ Sở Dữ Liệu Supabase</span>
         </button>
       </div>
 
@@ -998,6 +1223,106 @@ export const AdminManagement: React.FC<AdminManagementProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* TAB 6: SUPABASE DATABASE CONFIG & SQL SCHEMA */}
+      {activeTab === 'supabase' && (
+        <div className="space-y-6">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-6 shadow-xl">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-5">
+              <div className="flex items-center space-x-3">
+                <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-2xl">
+                  <Database className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-white">Kết Nối Cơ Sở Dữ Liệu Supabase</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Tất cả dữ liệu nhập vào (Bàn bida, Hóa đơn, Thực đơn, Khách hàng, Đặt bàn) được đồng bộ trực tiếp với Supabase
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={handleCheckSupabase}
+                disabled={checkingSupabase}
+                className="flex items-center space-x-2 bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2.5 rounded-xl text-xs font-bold transition shrink-0"
+              >
+                <RefreshCw className={`w-4 h-4 ${checkingSupabase ? 'animate-spin' : ''}`} />
+                <span>{checkingSupabase ? 'Đang kiểm tra...' : 'Kiểm tra kết nối'}</span>
+              </button>
+            </div>
+
+            {/* Status Card */}
+            {supabaseStatus && (
+              <div
+                className={`p-4 rounded-2xl border flex items-start space-x-3 text-xs ${
+                  supabaseStatus.connected
+                    ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300'
+                    : 'bg-amber-500/10 border-amber-500/20 text-amber-300'
+                }`}
+              >
+                {supabaseStatus.connected ? (
+                  <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+                ) : (
+                  <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                )}
+                <div className="space-y-1">
+                  <p className="font-bold text-sm">{supabaseStatus.message}</p>
+                  <p className="text-[11px] opacity-80">
+                    URL Supabase: <span className="font-mono text-white">{supabaseStatus.url}</span>
+                  </p>
+                  {supabaseStatus.tablesCheck && (
+                    <div className="mt-2 text-[11px] font-mono bg-slate-950/60 p-2.5 rounded-xl space-y-1">
+                      <div>Kiểm tra bảng staffs: <span className="text-emerald-400">{supabaseStatus.tablesCheck.staffs}</span></div>
+                      <div>Kiểm tra bảng tables: <span className="text-emerald-400">{supabaseStatus.tablesCheck.tables}</span></div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Step-by-step Guide */}
+            <div className="bg-slate-950 border border-slate-800 rounded-2xl p-5 space-y-3">
+              <h4 className="font-bold text-sm text-amber-400 flex items-center space-x-2">
+                <Sparkles className="w-4 h-4" />
+                <span>Hướng dẫn thiết lập bảng Database trên Supabase:</span>
+              </h4>
+              <ol className="list-decimal list-inside text-xs text-slate-300 space-y-2 leading-relaxed">
+                <li>Truy cập vào trang quản trị Supabase Project của bạn.</li>
+                <li>Mở mục <strong className="text-white font-semibold">SQL Editor</strong> ở thanh menu bên trái.</li>
+                <li>Nhấn nút <strong className="text-amber-400">"Sao chép SQL Schema"</strong> bên dưới để copy toàn bộ bảng chuẩn.</li>
+                <li>Dán (Paste) mã SQL vào khung soạn thảo của Supabase SQL Editor và nhấn <strong className="text-emerald-400 font-bold">RUN</strong>.</li>
+                <li>Tất cả dữ liệu nhập vào từ quán Bida của bạn giờ đây sẽ được lưu trữ và đồng bộ tức thì trên Supabase!</li>
+              </ol>
+            </div>
+
+            {/* SQL Code Box with Copy Button */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-300 flex items-center space-x-2">
+                  <Layers className="w-4 h-4 text-emerald-400" />
+                  <span>Mã SQL Tạo Bảng Chuẩn Supabase (supabase-schema.sql)</span>
+                </span>
+                <button
+                  onClick={handleCopySql}
+                  className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-xs font-bold transition shadow-lg ${
+                    copiedSql
+                      ? 'bg-emerald-500 text-slate-950'
+                      : 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950'
+                  }`}
+                >
+                  {copiedSql ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                  <span>{copiedSql ? 'Đã sao chép SQL!' : 'Sao chép SQL Schema'}</span>
+                </button>
+              </div>
+
+              <div className="relative">
+                <pre className="bg-slate-950 border border-slate-800/80 rounded-2xl p-4 text-[11px] font-mono text-emerald-400/90 overflow-x-auto max-h-96 leading-relaxed select-all">
+                  {SQL_SCHEMA_CODE}
+                </pre>
+              </div>
+            </div>
           </div>
         </div>
       )}

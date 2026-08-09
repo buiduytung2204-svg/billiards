@@ -169,5 +169,6 @@ export const api = {
 
   // Stats & Reset
   getStats: () => fetchJson<DashboardStats>(`${API_BASE}/stats`),
+  getSupabaseStatus: () => fetchJson<{ success: boolean; connected: boolean; url: string; message: string; tablesCheck?: any }>(`${API_BASE}/supabase/status`),
   resetDb: () => fetchJson<{ message: string }>(`${API_BASE}/db/reset`, { method: 'POST' }),
 };
