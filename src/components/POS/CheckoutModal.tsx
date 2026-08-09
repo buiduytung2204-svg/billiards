@@ -233,7 +233,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({ table, customers, 
           {/* Payment Method Selector */}
           <div className="space-y-1.5">
             <label className="font-bold text-slate-300">Phương thức thanh toán:</label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               <button
                 onClick={() => setPaymentMethod('Cash')}
                 className={`py-2.5 px-3 rounded-xl border flex items-center justify-center space-x-1.5 font-bold transition ${
@@ -242,7 +242,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({ table, customers, 
                     : 'bg-slate-950 text-slate-400 border-slate-800'
                 }`}
               >
-                <DollarSign className="w-4 h-4" />
+                <DollarSign className="w-4 h-4 shrink-0" />
                 <span>Tiền mặt</span>
               </button>
               <button
@@ -253,7 +253,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({ table, customers, 
                     : 'bg-slate-950 text-slate-400 border-slate-800'
                 }`}
               >
-                <QrCode className="w-4 h-4" />
+                <QrCode className="w-4 h-4 shrink-0" />
                 <span>Chuyển khoản VietQR</span>
               </button>
               <button
@@ -264,7 +264,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({ table, customers, 
                     : 'bg-slate-950 text-slate-400 border-slate-800'
                 }`}
               >
-                <CreditCard className="w-4 h-4" />
+                <CreditCard className="w-4 h-4 shrink-0" />
                 <span>Quẹt thẻ</span>
               </button>
             </div>

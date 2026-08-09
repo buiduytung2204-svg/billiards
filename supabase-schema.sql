@@ -146,7 +146,7 @@ ALTER TABLE public.vip_discount_rates DISABLE ROW LEVEL SECURITY;
 -- Tài khoản nhân viên
 INSERT INTO public.staffs (staffid, username, password, fullname, role, phone, status)
 VALUES (1, 'admin', '123', 'Nguyễn Văn Minh (Quản lý)', 'Manager', '0901234567', 'Active')
-ON CONFLICT (username) DO NOTHING;
+ON CONFLICT (staffid) DO NOTHING;
 
 -- Khách hàng mẫu
 INSERT INTO public.customers (customerid, fullname, phone, email, point, createdat, membershiptier, totalspent)
@@ -155,7 +155,7 @@ VALUES
   (2, 'Nguyễn Thanh Tùng', '0977333444', 'thanhtung@gmail.com', 150, '2026-02-10T10:30:00Z', 'Silver', 2100000),
   (3, 'Vũ Quốc Bảo', '0966555666', 'quocbao@billiard.vn', 650, '2025-11-20T14:15:00Z', 'Platinum', 11500000),
   (4, 'Hoàng Trọng Nghĩa', '0933888999', 'trongnghia@yahoo.com', 45, '2026-03-01T09:00:00Z', 'Bronze', 650000)
-ON CONFLICT (phone) DO NOTHING;
+ON CONFLICT (customerid) DO NOTHING;
 
 -- Danh sách Bàn Bida
 INSERT INTO public.tables (tableid, tablename, tabletype, hourlyprice, status, zone)
@@ -196,7 +196,7 @@ VALUES
   (1, 'BIDA50K', 50000, 'Fixed', 200000, '2026-12-31'),
   (2, 'VIP100K', 100000, 'Fixed', 400000, '2026-12-31'),
   (3, 'CHAO2026', 30000, 'Fixed', 100000, '2026-12-31')
-ON CONFLICT (vouchercode) DO NOTHING;
+ON CONFLICT (voucherid) DO NOTHING;
 
 -- Tỷ lệ giảm giá VIP
 INSERT INTO public.vip_discount_rates (id, bronze, silver, gold, platinum)
@@ -204,8 +204,8 @@ VALUES (1, 0, 5, 10, 15)
 ON CONFLICT (id) DO NOTHING;
 
 -- Đồng bộ Sequence tự tăng ID trong Supabase
-SELECT setval('staffs_staffid_seq', (SELECT MAX(staffid) FROM staffs));
-SELECT setval('customers_customerid_seq', (SELECT MAX(customerid) FROM customers));
-SELECT setval('tables_tableid_seq', (SELECT MAX(tableid) FROM tables));
-SELECT setval('products_productid_seq', (SELECT MAX(productid) FROM products));
-SELECT setval('vouchers_voucherid_seq', (SELECT MAX(voucherid) FROM vouchers));
+SELECT setval('staffs_staffid_seq', (SELECT COALESCE(MAX(staffid), 1) FROM staffs));
+SELECT setval('customers_customerid_seq', (SELECT COALESCE(MAX(customerid), 1) FROM customers));
+SELECT setval('tables_tableid_seq', (SELECT COALESCE(MAX(tableid), 1) FROM tables));
+SELECT setval('products_productid_seq', (SELECT COALESCE(MAX(productid), 1) FROM products));
+SELECT setval('vouchers_voucherid_seq', (SELECT COALESCE(MAX(voucherid), 1) FROM vouchers));

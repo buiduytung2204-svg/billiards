@@ -202,13 +202,13 @@ ALTER TABLE public.vip_discount_rates DISABLE ROW LEVEL SECURITY;
 
 -- DỮ LIỆU MẪU BAN ĐẦU
 INSERT INTO public.staffs (staffid, username, password, fullname, role, phone, status)
-VALUES (1, 'admin', '123', 'Nguyễn Văn Minh (Quản lý)', 'Manager', '0901234567', 'Active') ON CONFLICT (username) DO NOTHING;
+VALUES (1, 'admin', '123', 'Nguyễn Văn Minh (Quản lý)', 'Manager', '0901234567', 'Active') ON CONFLICT (staffid) DO NOTHING;
 
 INSERT INTO public.customers (customerid, fullname, phone, email, point, createdat, membershiptier, totalspent)
 VALUES 
   (1, 'Phạm Đức Anh', '0988111222', 'ducanh@gmail.com', 320, '2026-01-15T08:00:00Z', 'Gold', 4800000),
   (2, 'Nguyễn Thanh Tùng', '0977333444', 'thanhtung@gmail.com', 150, '2026-02-10T10:30:00Z', 'Silver', 2100000)
-ON CONFLICT (phone) DO NOTHING;
+ON CONFLICT (customerid) DO NOTHING;
 
 INSERT INTO public.tables (tableid, tablename, tabletype, hourlyprice, status, zone)
 VALUES 
@@ -242,10 +242,17 @@ INSERT INTO public.vouchers (voucherid, vouchercode, discountamount, discounttyp
 VALUES 
   (1, 'BIDA50K', 50000, 'Fixed', 200000, '2026-12-31'),
   (2, 'VIP100K', 100000, 'Fixed', 400000, '2026-12-31')
-ON CONFLICT (vouchercode) DO NOTHING;
+ON CONFLICT (voucherid) DO NOTHING;
 
 INSERT INTO public.vip_discount_rates (id, bronze, silver, gold, platinum)
-VALUES (1, 0, 5, 10, 15) ON CONFLICT (id) DO NOTHING;`;
+VALUES (1, 0, 5, 10, 15) ON CONFLICT (id) DO NOTHING;
+
+-- ĐỒNG BỘ SEQUENCE TỰ TĂNG ID
+SELECT setval('staffs_staffid_seq', (SELECT COALESCE(MAX(staffid), 1) FROM staffs));
+SELECT setval('customers_customerid_seq', (SELECT COALESCE(MAX(customerid), 1) FROM customers));
+SELECT setval('tables_tableid_seq', (SELECT COALESCE(MAX(tableid), 1) FROM tables));
+SELECT setval('products_productid_seq', (SELECT COALESCE(MAX(productid), 1) FROM products));
+SELECT setval('vouchers_voucherid_seq', (SELECT COALESCE(MAX(voucherid), 1) FROM vouchers));`;
 
   const handleCopySql = () => {
     navigator.clipboard.writeText(SQL_SCHEMA_CODE);
