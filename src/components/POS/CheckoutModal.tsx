@@ -12,6 +12,23 @@ interface CheckoutModalProps {
   onSuccessCheckout: () => void;
 }
 
+const checkoutStartTimesMap: Record<number, string> = {};
+
+function getCheckoutStableStartTime(tableid: number, starttimeFromInvoice?: string | null, isPlaying?: boolean): string {
+  if (!isPlaying) {
+    delete checkoutStartTimesMap[tableid];
+    return new Date().toISOString();
+  }
+  if (starttimeFromInvoice) {
+    checkoutStartTimesMap[tableid] = starttimeFromInvoice;
+    return starttimeFromInvoice;
+  }
+  if (!checkoutStartTimesMap[tableid]) {
+    checkoutStartTimesMap[tableid] = new Date().toISOString();
+  }
+  return checkoutStartTimesMap[tableid];
+}
+
 export const CheckoutModal: React.FC<CheckoutModalProps> = ({ table, customers, onClose, onSuccessCheckout }) => {
   const rawStatus = (table.status || '').toUpperCase();
   const isPlaying = rawStatus === 'PLAYING' || !!table.activeInvoice;
@@ -19,7 +36,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({ table, customers, 
   const activeInvoice = table.activeInvoice || (isPlaying ? {
     invoiceid: table.current_invoice_id || (1000 + table.tableid),
     tableid: table.tableid,
-    starttime: new Date().toISOString(),
+    starttime: getCheckoutStableStartTime(table.tableid, table.activeInvoice?.starttime, isPlaying),
     playtime_minutes: 0,
     tablefee: 0,
     servicefee: 0,

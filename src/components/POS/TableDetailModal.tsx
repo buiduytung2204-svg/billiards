@@ -17,6 +17,23 @@ interface TableDetailModalProps {
   onProceedToCheckout: (table: BilliardTable) => void;
 }
 
+const modalStartTimesMap: Record<number, string> = {};
+
+function getModalStableStartTime(tableid: number, starttimeFromInvoice?: string | null, isPlaying?: boolean): string {
+  if (!isPlaying) {
+    delete modalStartTimesMap[tableid];
+    return new Date().toISOString();
+  }
+  if (starttimeFromInvoice) {
+    modalStartTimesMap[tableid] = starttimeFromInvoice;
+    return starttimeFromInvoice;
+  }
+  if (!modalStartTimesMap[tableid]) {
+    modalStartTimesMap[tableid] = new Date().toISOString();
+  }
+  return modalStartTimesMap[tableid];
+}
+
 export const TableDetailModal: React.FC<TableDetailModalProps> = ({
   table,
   products,
@@ -36,7 +53,7 @@ export const TableDetailModal: React.FC<TableDetailModalProps> = ({
   const activeInvoice = table.activeInvoice || (isPlaying ? {
     invoiceid: table.current_invoice_id || (1000 + table.tableid),
     tableid: table.tableid,
-    starttime: new Date().toISOString(),
+    starttime: getModalStableStartTime(table.tableid, table.activeInvoice?.starttime, isPlaying),
     playtime_minutes: 0,
     tablefee: 0,
     servicefee: 0,

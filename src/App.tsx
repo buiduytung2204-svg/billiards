@@ -151,7 +151,7 @@ export default function App() {
       return;
     }
     try {
-      await api.addServiceToTable(invoiceid, productid, quantity);
+      await api.addServiceToTable(invoiceid, productid, quantity, selectedTableForDetail?.tableid);
       await refreshAllData();
     } catch (err: any) {
       alert(`Không thể thêm món: ${err.message}`);

@@ -265,21 +265,33 @@ class BilliardDatabase {
 
   // 2. INVOICES
   public async getInvoices(): Promise<Invoice[]> {
-    const { data: invs } = await supabase.from('invoices').select('*').order('invoiceid', { ascending: false });
-    if (!invs || invs.length === 0) {
-      return this.inMemoryInvoices;
-    }
-    const { data: details } = await supabase.from('invoice_details').select('*');
-    const detailMap = (details || []).reduce((acc: any, d: any) => {
-      acc[d.invoiceid] = acc[d.invoiceid] || [];
-      acc[d.invoiceid].push(d);
-      return acc;
-    }, {});
+    let dbInvoices: Invoice[] = [];
+    try {
+      const { data: invs } = await supabase.from('invoices').select('*').order('invoiceid', { ascending: false });
+      if (invs && invs.length > 0) {
+        const { data: details } = await supabase.from('invoice_details').select('*');
+        const detailMap = (details || []).reduce((acc: any, d: any) => {
+          acc[d.invoiceid] = acc[d.invoiceid] || [];
+          acc[d.invoiceid].push(d);
+          return acc;
+        }, {});
 
-    return invs.map((i) => ({
-      ...i,
-      details: detailMap[i.invoiceid] || [],
-    })) as Invoice[];
+        dbInvoices = invs.map((i) => ({
+          ...i,
+          details: detailMap[i.invoiceid] || [],
+        })) as Invoice[];
+      }
+    } catch (e) {}
+
+    const dbIds = new Set(dbInvoices.map((i) => Number(i.invoiceid)));
+    const merged = [...dbInvoices];
+    for (const memInv of this.inMemoryInvoices) {
+      if (!dbIds.has(Number(memInv.invoiceid))) {
+        merged.push(memInv);
+      }
+    }
+
+    return merged;
   }
 
   public async getInvoiceById(invoiceid: number): Promise<Invoice | undefined> {
@@ -292,6 +304,137 @@ class BilliardDatabase {
       ...inv,
       details: details || [],
     } as Invoice;
+  }
+
+  public async getOrCreateStableActiveInvoiceForTable(tableid: number): Promise<Invoice> {
+    const invoices = await this.getInvoices();
+    let playing = invoices.find(
+      (i) => Number(i.tableid) === Number(tableid) && (i.status || '').toUpperCase() === 'PLAYING'
+    );
+    if (playing) return playing;
+
+    const table = await this.getTableById(tableid);
+    if (table?.current_invoice_id) {
+      playing = invoices.find((i) => Number(i.invoiceid) === Number(table.current_invoice_id));
+      if (playing) return playing;
+    }
+
+    const memMatch = this.inMemoryInvoices.find(
+      (i) => Number(i.tableid) === Number(tableid) && (i.status || '').toUpperCase() === 'PLAYING'
+    );
+    if (memMatch) return memMatch;
+
+    const now = new Date().toISOString();
+    const newInvoiceId = 1000 + Number(tableid);
+    const newInv: Invoice = {
+      invoiceid: newInvoiceId,
+      tableid,
+      customerid: undefined,
+      staffid: 1,
+      starttime: now,
+      createdat: now,
+      playtime_minutes: 0,
+      tablefee: 0,
+      servicefee: 0,
+      discountamount: 0,
+      totalamount: 0,
+      status: 'Playing',
+      paymentmethod: 'Cash',
+      details: [],
+    };
+
+    this.inMemoryInvoices.unshift(newInv);
+
+    try {
+      await supabase.from('invoices').insert([{
+        tableid,
+        staffid: 1,
+        starttime: now,
+        createdat: now,
+        status: 'Playing',
+        paymentmethod: 'Cash',
+        playtime_minutes: 0,
+        tablefee: 0,
+        servicefee: 0,
+        discountamount: 0,
+        totalamount: 0,
+      }]);
+      await supabase.from('tables').update({ status: TableStatus.PLAYING, current_invoice_id: newInvoiceId }).eq('tableid', tableid);
+    } catch (e) {}
+
+    return newInv;
+  }
+
+  public async findOrCreateActiveInvoice(invoiceid: number, tableid?: number): Promise<Invoice> {
+    if (invoiceid) {
+      let invoice = await this.getInvoiceById(invoiceid);
+      if (invoice && (invoice.status || '').toUpperCase() === 'PLAYING') {
+        return invoice;
+      }
+    }
+
+    const allInvoices = await this.getInvoices();
+
+    if (invoiceid) {
+      const matchById = allInvoices.find((i) => Number(i.invoiceid) === Number(invoiceid) && (i.status || '').toUpperCase() === 'PLAYING');
+      if (matchById) return matchById;
+    }
+
+    const targetTableId = tableid || (invoiceid > 1000 && invoiceid <= 1200 ? invoiceid - 1000 : undefined);
+
+    if (targetTableId) {
+      const matchByTable = allInvoices.find((i) => Number(i.tableid) === Number(targetTableId) && (i.status || '').toUpperCase() === 'PLAYING');
+      if (matchByTable) return matchByTable;
+    }
+
+    const allTables = await this.getTables();
+    let targetTable = targetTableId ? allTables.find((t) => Number(t.tableid) === Number(targetTableId)) : undefined;
+    if (!targetTable) {
+      targetTable = allTables.find((t) => Number(t.current_invoice_id) === Number(invoiceid) || (1000 + Number(t.tableid)) === Number(invoiceid) || t.status === TableStatus.PLAYING);
+    }
+
+    if (!targetTable) {
+      targetTable = allTables.find((t) => t.status === TableStatus.PLAYING) || allTables[0];
+    }
+
+    const matchedTableId = targetTable ? targetTable.tableid : (targetTableId || 1);
+
+    const now = new Date().toISOString();
+    const payload = {
+      tableid: matchedTableId,
+      customerid: null,
+      staffid: 1,
+      starttime: now,
+      playtime_minutes: 0,
+      tablefee: 0,
+      servicefee: 0,
+      discountamount: 0,
+      totalamount: 0,
+      status: 'Playing',
+      paymentmethod: 'Cash',
+      createdat: now,
+    };
+
+    try {
+      const { data: newInv } = await supabase.from('invoices').insert([payload]).select().single();
+      if (newInv) {
+        await supabase.from('tables').update({ status: TableStatus.PLAYING, current_invoice_id: newInv.invoiceid }).eq('tableid', matchedTableId);
+        return { ...newInv, details: [] } as Invoice;
+      }
+    } catch (e) {}
+
+    const fallbackInv: Invoice = {
+      ...payload,
+      customerid: undefined,
+      invoiceid: invoiceid || (1000 + matchedTableId),
+      details: [],
+    };
+    this.inMemoryInvoices.unshift(fallbackInv);
+    if (targetTable) {
+      targetTable.status = TableStatus.PLAYING;
+      targetTable.current_invoice_id = fallbackInv.invoiceid;
+    }
+    return fallbackInv;
   }
 
   public async openTable(tableid: number, customerid?: number, staffid: number = 1): Promise<Invoice> {
@@ -307,9 +450,8 @@ class BilliardDatabase {
       (inv) => Number(inv.tableid) === Number(tableid) && (inv.status || '').toUpperCase() === 'PLAYING'
     );
 
-    // Only throw error if table is currently playing AND actually has an active playing invoice
-    if (isCurrentlyPlaying && existingActiveInvoice) {
-      throw new Error('Bàn đang có người chơi!');
+    if (existingActiveInvoice) {
+      return existingActiveInvoice;
     }
 
     const now = new Date().toISOString();
@@ -419,16 +561,8 @@ class BilliardDatabase {
     return { ...table, status: TableStatus.EMPTY, current_invoice_id: null };
   }
 
-  public async addServiceToTable(invoiceid: number, productid: number, quantity: number = 1): Promise<Invoice> {
-    let invoice = await this.getInvoiceById(invoiceid);
-    if (!invoice) {
-      const invoices = await this.getInvoices();
-      invoice = invoices.find((i) => (i.status || '').toUpperCase() === 'PLAYING');
-    }
-
-    if (!invoice || (invoice.status || '').toUpperCase() !== 'PLAYING') {
-      throw new Error('Hóa đơn không hợp lệ hoặc đã thanh toán!');
-    }
+  public async addServiceToTable(invoiceid: number, productid: number, quantity: number = 1, tableid?: number): Promise<Invoice> {
+    const invoice = await this.findOrCreateActiveInvoice(invoiceid, tableid);
 
     const product = await this.getProductById(productid);
     if (!product) throw new Error('Sản phẩm không tồn tại!');
@@ -494,15 +628,7 @@ class BilliardDatabase {
   }
 
   public async removeServiceFromTable(invoiceid: number, detailid: number, quantity: number = 1): Promise<Invoice> {
-    let invoice = await this.getInvoiceById(invoiceid);
-    if (!invoice) {
-      const invoices = await this.getInvoices();
-      invoice = invoices.find((i) => (i.status || '').toUpperCase() === 'PLAYING');
-    }
-
-    if (!invoice || (invoice.status || '').toUpperCase() !== 'PLAYING') {
-      throw new Error('Hóa đơn không tồn tại hoặc đã thanh toán!');
-    }
+    const invoice = await this.findOrCreateActiveInvoice(invoiceid);
 
     const detail = invoice.details.find((d) => Number(d.detailid) === Number(detailid));
     if (!detail) throw new Error('Chi tiết dịch vụ không tồn tại!');
@@ -538,25 +664,16 @@ class BilliardDatabase {
     paymentmethod: 'Cash' | 'Transfer' | 'Card';
     staffid?: number;
   }): Promise<Invoice> {
-    let invoice = await this.getInvoiceById(params.invoiceid);
-    if (!invoice) {
-      const invoices = await this.getInvoices();
-      invoice = invoices.find((i) => Number(i.invoiceid) === Number(params.invoiceid) || (i.status || '').toUpperCase() === 'PLAYING');
-    }
-
-    if (!invoice || (invoice.status || '').toUpperCase() !== 'PLAYING') {
-      throw new Error('Hóa đơn không hợp lệ hoặc đã đóng!');
-    }
+    const invoice = await this.findOrCreateActiveInvoice(params.invoiceid);
 
     const table = await this.getTableById(invoice.tableid);
-    if (!table) throw new Error('Bàn không tồn tại!');
+    const hourlyRate = table?.hourlyprice || 70000;
 
     const now = new Date();
     const start = new Date(invoice.starttime || now.toISOString());
     const durationMs = Math.max(0, now.getTime() - start.getTime());
     const durationMinutes = Math.max(1, Math.ceil(durationMs / (1000 * 60)));
 
-    const hourlyRate = table.hourlyprice || 70000;
     const tableFee = Math.round((durationMinutes / 60) * hourlyRate);
 
     let discount = 0;
@@ -975,41 +1092,27 @@ apiRouter.get('/tables', async (req, res) => {
   try {
     const tables = await db.getTables();
     const invoices = await db.getInvoices();
-    const result = tables.map((t) => {
-      // Find active playing invoice by current_invoice_id OR by tableid with status 'Playing'/'PLAYING'
-      let activeInvoice = t.current_invoice_id ? invoices.find((i) => Number(i.invoiceid) === Number(t.current_invoice_id)) : undefined;
-      if (!activeInvoice) {
-        activeInvoice = invoices.find((i) => Number(i.tableid) === Number(t.tableid) && (i.status || '').toUpperCase() === 'PLAYING');
-      }
+    const result = await Promise.all(
+      tables.map(async (t) => {
+        let activeInvoice = t.current_invoice_id ? invoices.find((i) => Number(i.invoiceid) === Number(t.current_invoice_id)) : undefined;
+        if (!activeInvoice) {
+          activeInvoice = invoices.find((i) => Number(i.tableid) === Number(t.tableid) && (i.status || '').toUpperCase() === 'PLAYING');
+        }
 
-      const rawStatus = (t.status || '').toUpperCase();
-      const isPlaying = rawStatus === 'PLAYING' || !!activeInvoice;
+        const rawStatus = (t.status || '').toUpperCase();
+        const isPlaying = rawStatus === 'PLAYING' || !!activeInvoice;
 
-      if (isPlaying && !activeInvoice) {
-        const now = new Date().toISOString();
-        activeInvoice = {
-          invoiceid: t.current_invoice_id || (1000 + t.tableid),
-          tableid: t.tableid,
-          staffid: 1,
-          starttime: now,
-          createdat: now,
-          playtime_minutes: 0,
-          tablefee: 0,
-          servicefee: 0,
-          discountamount: 0,
-          totalamount: 0,
-          status: 'Playing',
-          paymentmethod: 'Cash',
-          details: [],
+        if (isPlaying && !activeInvoice) {
+          activeInvoice = await db.getOrCreateStableActiveInvoiceForTable(t.tableid);
+        }
+
+        return {
+          ...t,
+          status: isPlaying ? TableStatus.PLAYING : (rawStatus === 'RESERVED' || rawStatus === 'BOOKED' ? TableStatus.RESERVED : TableStatus.EMPTY),
+          activeInvoice: activeInvoice || null,
         };
-      }
-
-      return {
-        ...t,
-        status: isPlaying ? TableStatus.PLAYING : (rawStatus === 'RESERVED' || rawStatus === 'BOOKED' ? TableStatus.RESERVED : TableStatus.EMPTY),
-        activeInvoice: activeInvoice || null,
-      };
-    });
+      })
+    );
     res.json({ success: true, data: result });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -1042,8 +1145,8 @@ apiRouter.post('/tables/:id/cancel', requireStaffAuth, async (req, res) => {
 // Thêm dịch vụ / đồ ăn vào bàn
 apiRouter.post('/tables/add-service', requireStaffAuth, async (req, res) => {
   try {
-    const { invoiceid, productid, quantity } = req.body;
-    const updatedInvoice = await db.addServiceToTable(invoiceid, productid, quantity || 1);
+    const { invoiceid, productid, quantity, tableid } = req.body;
+    const updatedInvoice = await db.addServiceToTable(invoiceid, productid, quantity || 1, tableid);
     res.json({ success: true, message: 'Thêm dịch vụ thành công!', data: updatedInvoice });
   } catch (err: any) {
     res.status(400).json({ success: false, error: err.message });

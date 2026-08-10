@@ -99,10 +99,10 @@ export const api = {
     fetchJson<BilliardTable>(`${API_BASE}/tables/${tableid}/cancel`, {
       method: 'POST',
     }),
-  addServiceToTable: (invoiceid: number, productid: number, quantity: number = 1) =>
+  addServiceToTable: (invoiceid: number, productid: number, quantity: number = 1, tableid?: number) =>
     fetchJson<Invoice>(`${API_BASE}/tables/add-service`, {
       method: 'POST',
-      body: JSON.stringify({ invoiceid, productid, quantity }),
+      body: JSON.stringify({ invoiceid, productid, quantity, tableid }),
     }),
   removeServiceFromTable: (invoiceid: number, detailid: number, quantity: number = 1) =>
     fetchJson<Invoice>(`${API_BASE}/tables/remove-service`, {

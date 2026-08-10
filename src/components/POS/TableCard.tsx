@@ -10,6 +10,23 @@ interface TableCardProps {
   onCheckout: (table: BilliardTable) => void;
 }
 
+const tableStartTimesMap: Record<number, string> = {};
+
+function getStableStartTime(tableid: number, starttimeFromInvoice?: string | null, isPlaying?: boolean): string {
+  if (!isPlaying) {
+    delete tableStartTimesMap[tableid];
+    return new Date().toISOString();
+  }
+  if (starttimeFromInvoice) {
+    tableStartTimesMap[tableid] = starttimeFromInvoice;
+    return starttimeFromInvoice;
+  }
+  if (!tableStartTimesMap[tableid]) {
+    tableStartTimesMap[tableid] = new Date().toISOString();
+  }
+  return tableStartTimesMap[tableid];
+}
+
 export const TableCard: React.FC<TableCardProps> = ({ table, onOpenTable, onAddService, onCheckout }) => {
   const rawStatus = (table.status || '').toUpperCase();
   const isPlaying = rawStatus === 'PLAYING' || !!table.activeInvoice;
@@ -18,7 +35,7 @@ export const TableCard: React.FC<TableCardProps> = ({ table, onOpenTable, onAddS
   const activeInvoice = table.activeInvoice || (isPlaying ? {
     invoiceid: table.current_invoice_id || (1000 + table.tableid),
     tableid: table.tableid,
-    starttime: new Date().toISOString(),
+    starttime: getStableStartTime(table.tableid, table.activeInvoice?.starttime, isPlaying),
     playtime_minutes: 0,
     tablefee: 0,
     servicefee: 0,
