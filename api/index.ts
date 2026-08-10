@@ -175,6 +175,7 @@ class BilliardDatabase {
   private inMemoryInvoices: Invoice[] = [];
   private inMemoryStockTxs: StockTransaction[] = [];
   private inMemoryVipRates = { Bronze: 0, Silver: 5, Gold: 10, Platinum: 15 };
+  private activeTableInvoicesMap = new Map<number, Invoice>();
 
   // 1. TABLES
   public async getTables(): Promise<BilliardTable[]> {
@@ -283,46 +284,88 @@ class BilliardDatabase {
       }
     } catch (e) {}
 
-    const dbIds = new Set(dbInvoices.map((i) => Number(i.invoiceid)));
-    const merged = [...dbInvoices];
+    const tables = await this.getTables();
+    const customers = await this.getCustomers();
+    const tableMap = new Map(tables.map((t) => [Number(t.tableid), t.tablename]));
+    const customerMap = new Map(customers.map((c) => [Number(c.customerid), c.fullname]));
+
+    const mergedMap = new Map<number, Invoice>();
+
+    for (const dbi of dbInvoices) {
+      mergedMap.set(Number(dbi.invoiceid), dbi);
+    }
+
     for (const memInv of this.inMemoryInvoices) {
-      if (!dbIds.has(Number(memInv.invoiceid))) {
-        merged.push(memInv);
+      const existing = mergedMap.get(Number(memInv.invoiceid));
+      if (!existing) {
+        mergedMap.set(Number(memInv.invoiceid), memInv);
+      } else {
+        const memStatus = String(memInv.status || '').toUpperCase();
+        if (memStatus === 'PAID' || memStatus === 'CANCELLED') {
+          mergedMap.set(Number(memInv.invoiceid), {
+            ...existing,
+            ...memInv,
+            details: memInv.details && memInv.details.length > 0 ? memInv.details : existing.details,
+          });
+        }
       }
     }
 
-    return merged;
+    const result = Array.from(mergedMap.values()).map((inv: any) => ({
+      ...inv,
+      tablename: inv.tablename || tableMap.get(Number(inv.tableid)) || `Bàn ${inv.tableid}`,
+      customername: inv.customername || (inv.customerid ? customerMap.get(Number(inv.customerid)) : undefined) || 'Khách vãng lai',
+    }));
+
+    result.sort((a, b) => Number(b.invoiceid) - Number(a.invoiceid));
+    return result;
   }
 
   public async getInvoiceById(invoiceid: number): Promise<Invoice | undefined> {
     const { data: inv } = await supabase.from('invoices').select('*').eq('invoiceid', invoiceid).single();
+    const memMatch = this.inMemoryInvoices.find((i) => Number(i.invoiceid) === Number(invoiceid));
     if (!inv) {
-      return this.inMemoryInvoices.find((i) => Number(i.invoiceid) === Number(invoiceid));
+      return memMatch;
     }
     const { data: details } = await supabase.from('invoice_details').select('*').eq('invoiceid', invoiceid);
+    const finalDetails = details && details.length > 0 ? details : (memMatch?.details || []);
     return {
       ...inv,
-      details: details || [],
+      details: finalDetails,
     } as Invoice;
   }
 
   public async getOrCreateStableActiveInvoiceForTable(tableid: number): Promise<Invoice> {
+    const mapCached = this.activeTableInvoicesMap.get(tableid);
+    if (mapCached && (mapCached.status || '').toUpperCase() === 'PLAYING') {
+      return mapCached;
+    }
+
     const invoices = await this.getInvoices();
     let playing = invoices.find(
       (i) => Number(i.tableid) === Number(tableid) && (i.status || '').toUpperCase() === 'PLAYING'
     );
-    if (playing) return playing;
+    if (playing) {
+      this.activeTableInvoicesMap.set(tableid, playing);
+      return playing;
+    }
 
     const table = await this.getTableById(tableid);
     if (table?.current_invoice_id) {
-      playing = invoices.find((i) => Number(i.invoiceid) === Number(table.current_invoice_id));
-      if (playing) return playing;
+      playing = invoices.find((i) => Number(i.invoiceid) === Number(table.current_invoice_id) && (i.status || '').toUpperCase() === 'PLAYING');
+      if (playing) {
+        this.activeTableInvoicesMap.set(tableid, playing);
+        return playing;
+      }
     }
 
     const memMatch = this.inMemoryInvoices.find(
       (i) => Number(i.tableid) === Number(tableid) && (i.status || '').toUpperCase() === 'PLAYING'
     );
-    if (memMatch) return memMatch;
+    if (memMatch) {
+      this.activeTableInvoicesMap.set(tableid, memMatch);
+      return memMatch;
+    }
 
     const now = new Date().toISOString();
     const newInvoiceId = 1000 + Number(tableid);
@@ -344,6 +387,7 @@ class BilliardDatabase {
     };
 
     this.inMemoryInvoices.unshift(newInv);
+    this.activeTableInvoicesMap.set(tableid, newInv);
 
     try {
       await supabase.from('invoices').insert([{
@@ -410,8 +454,8 @@ class BilliardDatabase {
       servicefee: 0,
       discountamount: 0,
       totalamount: 0,
-      status: 'Playing',
-      paymentmethod: 'Cash',
+      status: 'Playing' as const,
+      paymentmethod: 'Cash' as const,
       createdat: now,
     };
 
@@ -451,6 +495,7 @@ class BilliardDatabase {
     );
 
     if (existingActiveInvoice) {
+      this.activeTableInvoicesMap.set(tableid, existingActiveInvoice);
       return existingActiveInvoice;
     }
 
@@ -487,36 +532,37 @@ class BilliardDatabase {
 
     const { data: newInv, error: invErr } = await supabase.from('invoices').insert([invoicePayload]).select().single();
 
-    if (invErr || !newInv) {
-      // Fallback in memory
-      const newInvoiceId = this.inMemoryInvoices.length > 0 ? Math.max(...this.inMemoryInvoices.map((i) => i.invoiceid)) + 1 : 1001;
-      const fallbackInv: Invoice = {
-        ...invoicePayload,
-        invoiceid: newInvoiceId,
-        customerid: validCustomerId || undefined,
-        status: 'Playing',
-        paymentmethod: 'Cash',
-        details: [],
-      };
-      this.inMemoryInvoices.push(fallbackInv);
-      table.status = TableStatus.PLAYING;
-      table.current_invoice_id = newInvoiceId;
-      return fallbackInv;
-    }
+    const createdInv: Invoice = {
+      ...(newInv || invoicePayload),
+      invoiceid: newInv?.invoiceid || (this.inMemoryInvoices.length > 0 ? Math.max(...this.inMemoryInvoices.map((i) => i.invoiceid)) + 1 : 1001),
+      tableid,
+      customerid: validCustomerId || undefined,
+      status: 'Playing',
+      paymentmethod: 'Cash',
+      starttime: now,
+      createdat: now,
+      details: [],
+    };
+
+    this.inMemoryInvoices.unshift(createdInv);
+    this.activeTableInvoicesMap.set(tableid, createdInv);
 
     // Update table status in Supabase
-    await supabase.from('tables').update({
-      status: TableStatus.PLAYING,
-      current_invoice_id: newInv.invoiceid,
-    }).eq('tableid', tableid);
+    try {
+      await supabase.from('tables').update({
+        status: TableStatus.PLAYING,
+        current_invoice_id: createdInv.invoiceid,
+      }).eq('tableid', tableid);
+    } catch (e) {}
 
     table.status = TableStatus.PLAYING;
-    table.current_invoice_id = newInv.invoiceid;
+    table.current_invoice_id = createdInv.invoiceid;
 
-    return { ...newInv, details: [] } as Invoice;
+    return createdInv;
   }
 
   public async cancelOpenTable(tableid: number): Promise<BilliardTable> {
+    this.activeTableInvoicesMap.delete(tableid);
     const table = await this.getTableById(tableid);
     if (!table) throw new Error('Bàn không tồn tại!');
 
@@ -533,7 +579,9 @@ class BilliardDatabase {
     }
 
     if (invoice) {
-      await supabase.from('invoices').update({ status: 'Cancelled' }).eq('invoiceid', invoice.invoiceid);
+      try {
+        await supabase.from('invoices').update({ status: 'Cancelled' }).eq('invoiceid', invoice.invoiceid);
+      } catch (e) {}
 
       const inMemInv = this.inMemoryInvoices.find((i) => Number(i.invoiceid) === Number(invoice!.invoiceid));
       if (inMemInv) inMemInv.status = 'Cancelled';
@@ -547,10 +595,12 @@ class BilliardDatabase {
       }
     }
 
-    await supabase.from('tables').update({
-      status: TableStatus.EMPTY,
-      current_invoice_id: null,
-    }).eq('tableid', tableid);
+    try {
+      await supabase.from('tables').update({
+        status: TableStatus.EMPTY,
+        current_invoice_id: null,
+      }).eq('tableid', tableid);
+    } catch (e) {}
 
     const inMemTable = this.inMemoryTables.find((t) => Number(t.tableid) === Number(tableid));
     if (inMemTable) {
@@ -569,30 +619,51 @@ class BilliardDatabase {
     if (product.stock < quantity) throw new Error(`Sản phẩm "${product.productname}" không đủ tồn kho (Còn: ${product.stock})`);
 
     // Deduct stock
-    await this.updateProduct(productid, { stock: product.stock - quantity });
+    const newStock = Math.max(0, product.stock - quantity);
+    await this.updateProduct(productid, { stock: newStock });
 
     // Record transaction
+    const nowStr = new Date().toISOString();
+    const txRow = {
+      txid: Date.now(),
+      transactionid: Date.now(),
+      productid: product.productid,
+      productname: product.productname,
+      type: 'EXPORT_SALE' as const,
+      transactiontype: 'Sale' as const,
+      quantity,
+      quantitychange: -quantity,
+      costprice: product.costprice || 0,
+      createdat: nowStr,
+      transactiondate: nowStr,
+      note: `Bán cho Hóa đơn #${invoice.invoiceid}`,
+    };
+
     try {
       await supabase.from('stock_transactions').insert([{
         productid: product.productid,
         productname: product.productname,
         type: 'EXPORT_SALE',
         quantity,
-        costprice: product.costprice,
-        createdat: new Date().toISOString(),
-        note: `Bán cho Hóa đơn #${invoice.invoiceid}`,
+        costprice: product.costprice || 0,
+        createdat: nowStr,
+        note: txRow.note,
       }]);
     } catch (e) {}
+    this.inMemoryStockTxs.unshift(txRow);
 
     // Check if detail exists
+    invoice.details = invoice.details || [];
     const existingDetail = invoice.details.find((d) => Number(d.productid) === Number(productid));
     if (existingDetail) {
       const newQty = existingDetail.quantity + quantity;
       const newTotal = newQty * existingDetail.unitprice;
-      await supabase.from('invoice_details').update({
-        quantity: newQty,
-        totalprice: newTotal,
-      }).eq('detailid', existingDetail.detailid);
+      try {
+        await supabase.from('invoice_details').update({
+          quantity: newQty,
+          totalprice: newTotal,
+        }).eq('detailid', existingDetail.detailid);
+      } catch (e) {}
       existingDetail.quantity = newQty;
       existingDetail.totalprice = newTotal;
     } else {
@@ -604,31 +675,43 @@ class BilliardDatabase {
         unitprice: product.price,
         totalprice: product.price * quantity,
       };
-      const { data: newDet } = await supabase.from('invoice_details').insert([detailPayload]).select().single();
-      if (newDet) {
-        invoice.details.push(newDet);
-      } else {
-        invoice.details.push({
-          ...detailPayload,
-          detailid: Date.now(),
-        });
-      }
+      let insertedId = Date.now();
+      try {
+        const { data: newDet } = await supabase.from('invoice_details').insert([detailPayload]).select().single();
+        if (newDet) insertedId = newDet.detailid;
+      } catch (e) {}
+
+      const newDetObj: InvoiceDetail = {
+        ...detailPayload,
+        detailid: insertedId,
+      };
+      invoice.details.push(newDetObj);
     }
 
     // Recalculate servicefee
-    const updatedInvoice = await this.getInvoiceById(invoice.invoiceid);
-    if (updatedInvoice) {
-      const newServiceFee = updatedInvoice.details.reduce((sum, item) => sum + item.totalprice, 0);
-      await supabase.from('invoices').update({ servicefee: newServiceFee }).eq('invoiceid', invoice.invoiceid);
-      return { ...updatedInvoice, servicefee: newServiceFee };
-    }
-    const newServiceFee = invoice.details.reduce((sum, item) => sum + item.totalprice, 0);
+    const newServiceFee = invoice.details.reduce((sum, item) => sum + (item.totalprice ?? (item.unitprice * item.quantity) ?? 0), 0);
     invoice.servicefee = newServiceFee;
-    return invoice;
+
+    try {
+      await supabase.from('invoices').update({ servicefee: newServiceFee }).eq('invoiceid', invoice.invoiceid);
+    } catch (e) {}
+
+    // Synchronize memory & map
+    const mem = this.inMemoryInvoices.find((i) => Number(i.invoiceid) === Number(invoice.invoiceid));
+    if (mem) {
+      mem.details = [...invoice.details];
+      mem.servicefee = newServiceFee;
+    }
+    if (invoice.tableid) {
+      this.activeTableInvoicesMap.set(invoice.tableid, { ...invoice });
+    }
+
+    return { ...invoice, servicefee: newServiceFee };
   }
 
   public async removeServiceFromTable(invoiceid: number, detailid: number, quantity: number = 1): Promise<Invoice> {
     const invoice = await this.findOrCreateActiveInvoice(invoiceid);
+    invoice.details = invoice.details || [];
 
     const detail = invoice.details.find((d) => Number(d.detailid) === Number(detailid));
     if (!detail) throw new Error('Chi tiết dịch vụ không tồn tại!');
@@ -636,25 +719,71 @@ class BilliardDatabase {
     const product = await this.getProductById(detail.productid);
     if (product) {
       await this.updateProduct(product.productid, { stock: product.stock + quantity });
+
+      const nowStr = new Date().toISOString();
+      const txRow = {
+        txid: Date.now(),
+        transactionid: Date.now(),
+        productid: product.productid,
+        productname: product.productname,
+        type: 'IMPORT' as const,
+        transactiontype: 'Import' as const,
+        quantity,
+        quantitychange: quantity,
+        costprice: product.costprice || 0,
+        createdat: nowStr,
+        transactiondate: nowStr,
+        note: `Hoàn trả từ Hóa đơn #${invoice.invoiceid}`,
+      };
+      try {
+        await supabase.from('stock_transactions').insert([{
+          productid: product.productid,
+          productname: product.productname,
+          type: 'IMPORT',
+          quantity,
+          costprice: product.costprice || 0,
+          createdat: nowStr,
+          note: txRow.note,
+        }]);
+      } catch (e) {}
+      this.inMemoryStockTxs.unshift(txRow);
     }
 
     if (detail.quantity <= quantity) {
-      await supabase.from('invoice_details').delete().eq('detailid', detailid);
+      try {
+        await supabase.from('invoice_details').delete().eq('detailid', detailid);
+      } catch (e) {}
+      invoice.details = invoice.details.filter((d) => Number(d.detailid) !== Number(detailid));
     } else {
       const newQty = detail.quantity - quantity;
-      await supabase.from('invoice_details').update({
-        quantity: newQty,
-        totalprice: newQty * detail.unitprice,
-      }).eq('detailid', detailid);
+      const newTotal = newQty * detail.unitprice;
+      try {
+        await supabase.from('invoice_details').update({
+          quantity: newQty,
+          totalprice: newTotal,
+        }).eq('detailid', detailid);
+      } catch (e) {}
+      detail.quantity = newQty;
+      detail.totalprice = newTotal;
     }
 
-    const updatedInvoice = await this.getInvoiceById(invoice.invoiceid);
-    if (updatedInvoice) {
-      const newServiceFee = updatedInvoice.details.reduce((sum, item) => sum + item.totalprice, 0);
+    const newServiceFee = invoice.details.reduce((sum, item) => sum + (item.totalprice ?? (item.unitprice * item.quantity) ?? 0), 0);
+    invoice.servicefee = newServiceFee;
+
+    try {
       await supabase.from('invoices').update({ servicefee: newServiceFee }).eq('invoiceid', invoice.invoiceid);
-      return { ...updatedInvoice, servicefee: newServiceFee };
+    } catch (e) {}
+
+    const mem = this.inMemoryInvoices.find((i) => Number(i.invoiceid) === Number(invoice.invoiceid));
+    if (mem) {
+      mem.details = [...invoice.details];
+      mem.servicefee = newServiceFee;
     }
-    return invoice;
+    if (invoice.tableid) {
+      this.activeTableInvoicesMap.set(invoice.tableid, { ...invoice });
+    }
+
+    return { ...invoice, servicefee: newServiceFee };
   }
 
   public async checkoutTable(params: {
@@ -701,25 +830,34 @@ class BilliardDatabase {
 
     const totalAmount = Math.max(0, tableFee + (invoice.servicefee || 0) - discount);
 
-    await supabase.from('invoices').update({
-      endtime: now.toISOString(),
-      playtime_minutes: durationMinutes,
-      tablefee: tableFee,
-      discountamount: discount,
-      totalamount: totalAmount,
-      status: 'Paid',
-      paymentmethod: params.paymentmethod,
-      staffid: params.staffid || invoice.staffid || 1,
-      customerid: targetCustomerId || null,
-    }).eq('invoiceid', invoice.invoiceid);
+    try {
+      await supabase.from('invoices').update({
+        endtime: now.toISOString(),
+        playtime_minutes: durationMinutes,
+        tablefee: tableFee,
+        discountamount: discount,
+        totalamount: totalAmount,
+        status: 'Paid',
+        paymentmethod: params.paymentmethod,
+        staffid: params.staffid || invoice.staffid || 1,
+        customerid: targetCustomerId || null,
+      }).eq('invoiceid', invoice.invoiceid);
+    } catch (e) {}
 
-    const inMemInv = this.inMemoryInvoices.find((i) => Number(i.invoiceid) === Number(invoice!.invoiceid));
-    if (inMemInv) {
-      inMemInv.status = 'Paid';
-      inMemInv.totalamount = totalAmount;
-      inMemInv.tablefee = tableFee;
-      inMemInv.discountamount = discount;
+    let inMemInv = this.inMemoryInvoices.find((i) => Number(i.invoiceid) === Number(invoice!.invoiceid));
+    if (!inMemInv) {
+      inMemInv = { ...invoice };
+      this.inMemoryInvoices.unshift(inMemInv);
     }
+    inMemInv.status = 'Paid';
+    inMemInv.endtime = now.toISOString();
+    inMemInv.playtime_minutes = durationMinutes;
+    inMemInv.tablefee = tableFee;
+    inMemInv.servicefee = invoice.servicefee || 0;
+    inMemInv.discountamount = discount;
+    inMemInv.totalamount = totalAmount;
+    inMemInv.paymentmethod = params.paymentmethod;
+    if (targetCustomerId) inMemInv.customerid = targetCustomerId;
 
     if (customer) {
       const pointsEarned = Math.floor(totalAmount / 10000);
@@ -731,17 +869,23 @@ class BilliardDatabase {
       else if (newSpent >= 4000000) newTier = 'Gold';
       else if (newSpent >= 1500000) newTier = 'Silver';
 
-      await supabase.from('customers').update({
-        totalspent: newSpent,
-        point: newPoints,
-        membershiptier: newTier,
-      }).eq('customerid', customer.customerid);
+      try {
+        await supabase.from('customers').update({
+          totalspent: newSpent,
+          point: newPoints,
+          membershiptier: newTier,
+        }).eq('customerid', customer.customerid);
+      } catch (e) {}
     }
 
-    await supabase.from('tables').update({
-      status: TableStatus.EMPTY,
-      current_invoice_id: null,
-    }).eq('tableid', invoice.tableid);
+    this.activeTableInvoicesMap.delete(invoice.tableid);
+
+    try {
+      await supabase.from('tables').update({
+        status: TableStatus.EMPTY,
+        current_invoice_id: null,
+      }).eq('tableid', invoice.tableid);
+    } catch (e) {}
 
     const inMemTable = this.inMemoryTables.find((t) => Number(t.tableid) === Number(invoice!.tableid));
     if (inMemTable) {
@@ -750,13 +894,29 @@ class BilliardDatabase {
     }
 
     const finalInvoice = await this.getInvoiceById(invoice.invoiceid);
-    return finalInvoice || {
-      ...invoice,
+    const invoiceToReturn = finalInvoice || inMemInv;
+
+    const returnTable = await this.getTableById(invoice.tableid);
+    const returnCustomer = targetCustomerId ? await this.getCustomerById(targetCustomerId) : undefined;
+    const returnStaff = await this.getStaffById(params.staffid || invoice.staffid || 1);
+
+    return {
+      ...invoiceToReturn,
       status: 'Paid',
+      endtime: now.toISOString(),
+      playtime_minutes: durationMinutes,
       tablefee: tableFee,
+      servicefee: invoice.servicefee || 0,
       discountamount: discount,
       totalamount: totalAmount,
-    };
+      paymentmethod: params.paymentmethod,
+      customerid: targetCustomerId || undefined,
+      tablename: returnTable?.tablename || (invoice.tableid ? `Bàn ${invoice.tableid}` : 'Bàn bida'),
+      customername: returnCustomer?.fullname || 'Khách vãng lai',
+      customerphone: returnCustomer?.phone || '',
+      staffname: returnStaff?.fullname || 'Nhân viên thu ngân',
+      details: invoiceToReturn.details && invoiceToReturn.details.length > 0 ? invoiceToReturn.details : (invoice.details || []),
+    } as any;
   }
 
   // 3. PRODUCTS
@@ -807,32 +967,75 @@ class BilliardDatabase {
       costprice,
     });
 
+    const nowStr = new Date().toISOString();
+    const txId = Date.now();
     const txRow = {
+      txid: txId,
+      transactionid: txId,
       productid,
       productname: product.productname,
       type: 'IMPORT' as const,
+      transactiontype: 'Import' as const,
       quantity,
+      quantitychange: quantity,
       costprice,
-      createdat: new Date().toISOString(),
+      createdat: nowStr,
+      transactiondate: nowStr,
       note: note || 'Nhập kho thủ công',
     };
 
-    const { data, error } = await supabase.from('stock_transactions').insert([txRow]).select().single();
-    if (error || !data) {
-      const fallbackTx: StockTransaction = {
-        ...txRow,
-        txid: this.inMemoryStockTxs.length + 1,
-      };
-      this.inMemoryStockTxs.push(fallbackTx);
-      return fallbackTx;
-    }
-    return data as StockTransaction;
+    try {
+      await supabase.from('stock_transactions').insert([{
+        productid,
+        productname: product.productname,
+        type: 'IMPORT',
+        quantity,
+        costprice,
+        createdat: nowStr,
+        note: txRow.note,
+      }]);
+    } catch (e) {}
+
+    this.inMemoryStockTxs.unshift(txRow as any);
+    return txRow as any;
   }
 
   public async getStockTransactions(): Promise<StockTransaction[]> {
-    const { data, error } = await supabase.from('stock_transactions').select('*').order('txid', { ascending: false });
-    if (error || !data || data.length === 0) return this.inMemoryStockTxs;
-    return data as StockTransaction[];
+    let dbTxs: any[] = [];
+    try {
+      const { data } = await supabase.from('stock_transactions').select('*').order('createdat', { ascending: false });
+      if (data && data.length > 0) dbTxs = data;
+    } catch (e) {}
+
+    const combined = [...this.inMemoryStockTxs, ...dbTxs];
+    const seen = new Set();
+    const result: StockTransaction[] = [];
+
+    for (const tx of combined) {
+      const idKey = tx.txid || tx.transactionid || `${tx.productid}-${tx.createdat}`;
+      if (!seen.has(idKey)) {
+        seen.add(idKey);
+        const rawType = String(tx.type || tx.transactiontype || '');
+        const isImport = rawType.toUpperCase().includes('IMPORT') || (tx.quantity || tx.quantitychange || 0) > 0;
+        const qty = tx.quantity !== undefined ? Math.abs(tx.quantity) : (tx.quantitychange !== undefined ? Math.abs(tx.quantitychange) : 0);
+        result.push({
+          txid: tx.txid || tx.transactionid || Date.now(),
+          transactionid: tx.txid || tx.transactionid || Date.now(),
+          productid: tx.productid,
+          productname: tx.productname,
+          type: isImport ? 'IMPORT' : 'EXPORT_SALE',
+          transactiontype: isImport ? 'Import' : 'Sale',
+          quantity: qty,
+          quantitychange: isImport ? qty : -qty,
+          costprice: tx.costprice || 0,
+          createdat: tx.createdat || tx.transactiondate || new Date().toISOString(),
+          transactiondate: tx.createdat || tx.transactiondate || new Date().toISOString(),
+          note: tx.note || '',
+        } as any);
+      }
+    }
+
+    return result;
   }
 
   // 4. CUSTOMERS
@@ -915,6 +1118,11 @@ class BilliardDatabase {
     const { data, error } = await supabase.from('staffs').select('*').order('staffid');
     if (error || !data || data.length === 0) return this.inMemoryStaffs;
     return data as Staff[];
+  }
+
+  public async getStaffById(staffid: number): Promise<Staff | undefined> {
+    const staffs = await this.getStaffs();
+    return staffs.find((s) => Number(s.staffid) === Number(staffid));
   }
 
   public async loginStaff(username: string, password?: string): Promise<Staff> {
@@ -1018,8 +1226,17 @@ class BilliardDatabase {
     const tables = await this.getTables();
     const products = await this.getProducts();
 
-    const today = new Date().toISOString().split('T')[0];
-    const todayInvoices = invoices.filter((i) => i.status === 'Paid' && i.createdat && i.createdat.startsWith(today));
+    const nowLocal = new Date();
+    const todayStr = nowLocal.toISOString().split('T')[0];
+    const todayInvoices = invoices.filter((i) => {
+      const st = String(i.status || '').toUpperCase();
+      const isPaid = (i.status as any) === 1 || st === 'PAID' || st === 'COMPLETED';
+      if (!isPaid) return false;
+      const invDate = i.endtime || i.createdat || i.starttime;
+      if (!invDate) return true;
+      const dStr = new Date(invDate).toISOString().split('T')[0];
+      return dStr === todayStr || invDate.startsWith(todayStr);
+    });
 
     const totalRevenueToday = todayInvoices.reduce((sum, i) => sum + i.totalamount, 0);
     const tableRevenueToday = todayInvoices.reduce((sum, i) => sum + i.tablefee, 0);
@@ -1094,21 +1311,29 @@ apiRouter.get('/tables', async (req, res) => {
     const invoices = await db.getInvoices();
     const result = await Promise.all(
       tables.map(async (t) => {
-        let activeInvoice = t.current_invoice_id ? invoices.find((i) => Number(i.invoiceid) === Number(t.current_invoice_id)) : undefined;
+        let activeInvoice: Invoice | undefined;
+        if (t.current_invoice_id) {
+          const inv = invoices.find((i) => Number(i.invoiceid) === Number(t.current_invoice_id));
+          if (inv && (inv.status || '').toUpperCase() === 'PLAYING') {
+            activeInvoice = inv;
+          }
+        }
+
         if (!activeInvoice) {
-          activeInvoice = invoices.find((i) => Number(i.tableid) === Number(t.tableid) && (i.status || '').toUpperCase() === 'PLAYING');
+          activeInvoice = invoices.find(
+            (i) => Number(i.tableid) === Number(t.tableid) && (i.status || '').toUpperCase() === 'PLAYING'
+          );
         }
 
         const rawStatus = (t.status || '').toUpperCase();
-        const isPlaying = rawStatus === 'PLAYING' || !!activeInvoice;
-
-        if (isPlaying && !activeInvoice) {
-          activeInvoice = await db.getOrCreateStableActiveInvoiceForTable(t.tableid);
-        }
+        const isPlaying = !!activeInvoice;
 
         return {
           ...t,
-          status: isPlaying ? TableStatus.PLAYING : (rawStatus === 'RESERVED' || rawStatus === 'BOOKED' ? TableStatus.RESERVED : TableStatus.EMPTY),
+          status: isPlaying
+            ? TableStatus.PLAYING
+            : (rawStatus === 'RESERVED' || rawStatus === 'BOOKED' ? TableStatus.RESERVED : TableStatus.EMPTY),
+          current_invoice_id: isPlaying && activeInvoice ? activeInvoice.invoiceid : null,
           activeInvoice: activeInvoice || null,
         };
       })
@@ -1167,9 +1392,11 @@ apiRouter.post('/tables/remove-service', requireStaffAuth, async (req, res) => {
 // Thanh toán đóng bàn (Checkout)
 apiRouter.post('/tables/:id/checkout', requireStaffAuth, async (req, res) => {
   try {
+    const paramId = parseInt(req.params.id, 10);
     const { invoiceid, customerid, vouchercode, paymentmethod, staffid } = req.body;
+    const targetInvoiceId = invoiceid || paramId;
     const completedInvoice = await db.checkoutTable({
-      invoiceid,
+      invoiceid: targetInvoiceId,
       customerid,
       vouchercode,
       paymentmethod: paymentmethod || 'Cash',

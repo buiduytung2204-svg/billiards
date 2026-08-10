@@ -238,30 +238,36 @@ export const ProductManagement: React.FC<ProductManagementProps> = ({ products, 
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60">
-                {stockTransactions.map((tx) => {
-                  const isImport = tx.transactiontype === 'Import' || tx.quantitychange > 0;
+                {stockTransactions.map((tx, idx) => {
+                  const txId = tx.txid || tx.transactionid || (idx + 1);
+                  const txDate = tx.createdat || tx.transactiondate;
+                  const rawType = (tx.type || tx.transactiontype || '').toUpperCase();
+                  const isImport = rawType.includes('IMPORT') || rawType === 'IMPORT' || (tx.quantitychange && tx.quantitychange > 0);
+                  const qty = tx.quantity !== undefined ? Math.abs(tx.quantity) : (tx.quantitychange !== undefined ? Math.abs(tx.quantitychange) : 0);
+                  const displayQty = isImport ? `+${qty}` : `-${qty}`;
+
                   return (
-                    <tr key={tx.transactionid} className="hover:bg-slate-800/40 transition">
-                      <td className="p-3.5 font-mono text-slate-500">#{tx.transactionid}</td>
-                      <td className="p-3.5 text-slate-400">{formatDateTime(tx.transactiondate)}</td>
+                    <tr key={txId} className="hover:bg-slate-800/40 transition">
+                      <td className="p-3.5 font-mono text-slate-500">#{txId}</td>
+                      <td className="p-3.5 text-slate-400">{formatDateTime(txDate)}</td>
                       <td className="p-3.5 font-bold text-white">{tx.productname}</td>
                       <td className="p-3.5">
                         <span
                           className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            tx.transactiontype === 'Import'
+                            isImport
                               ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                               : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
                           }`}
                         >
-                          {tx.transactiontype === 'Import' ? 'Nhập kho' : tx.transactiontype === 'Sale' ? 'Bán hàng' : 'Điều chỉnh'}
+                          {isImport ? 'Nhập kho' : 'Bán hàng (Xuất kho)'}
                         </span>
                       </td>
                       <td className="p-3.5 font-mono font-bold">
                         <span className={isImport ? 'text-emerald-400' : 'text-rose-400'}>
-                          {isImport ? `+${tx.quantitychange}` : tx.quantitychange}
+                          {displayQty}
                         </span>
                       </td>
-                      <td className="p-3.5 text-slate-400">{tx.note}</td>
+                      <td className="p-3.5 text-slate-400">{tx.note || '--'}</td>
                     </tr>
                   );
                 })}

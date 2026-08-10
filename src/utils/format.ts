@@ -35,7 +35,7 @@ export function calculateDuration(startTimeIso?: string | null, endTimeIso?: str
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
-  const totalMinutes = Math.max(1, Math.ceil(totalSeconds / 60));
+  const totalMinutes = Math.floor(totalSeconds / 60);
 
   const pad = (n: number) => n.toString().padStart(2, '0');
   const formatted = `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
@@ -45,6 +45,9 @@ export function calculateDuration(startTimeIso?: string | null, endTimeIso?: str
 
 export function calculateRealtimeTableFee(startTimeIso: string | null | undefined, hourlyPrice: number) {
   if (!startTimeIso) return 0;
-  const { totalMinutes } = calculateDuration(startTimeIso);
-  return Math.round((hourlyPrice / 60) * totalMinutes);
+  const start = new Date(startTimeIso).getTime();
+  const diffMs = Math.max(0, Date.now() - start);
+  const totalSeconds = Math.floor(diffMs / 1000);
+  if (totalSeconds < 60) return 0;
+  return Math.round((hourlyPrice / 3600) * totalSeconds);
 }

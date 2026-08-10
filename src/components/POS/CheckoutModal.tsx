@@ -203,9 +203,11 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({ table, customers, 
                 {activeInvoice.details.map((d) => (
                   <div key={d.detailid} className="flex justify-between items-center text-slate-300 border-b border-slate-800/50 pb-1">
                     <span>
-                      {d.productname} x{d.quantity} {d.unit}
+                      {d.productname} x{d.quantity}
                     </span>
-                    <span className="font-semibold text-teal-300">{formatVND(d.subtotal)}</span>
+                    <span className="font-semibold text-teal-300">
+                      {formatVND(d.totalprice ?? ((d as any).subtotal) ?? (d.unitprice * d.quantity))}
+                    </span>
                   </div>
                 ))}
               </div>

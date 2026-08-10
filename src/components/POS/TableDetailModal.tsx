@@ -344,54 +344,58 @@ export const TableDetailModal: React.FC<TableDetailModalProps> = ({
                         Chưa gọi món nào. Chọn sản phẩm ở menu để thêm vào bàn.
                       </div>
                     ) : (
-                      activeInvoice.details.map((item) => (
-                        <div
-                          key={item.detailid}
-                          className="bg-slate-950 p-2.5 sm:p-3 rounded-xl border border-slate-800 flex items-center justify-between text-xs"
-                        >
-                          <div>
-                            <p className="font-semibold text-slate-100">{item.productname}</p>
-                            <p className="text-[11px] text-slate-400">
-                              {formatVND(item.unitprice)} / {item.unit}
-                            </p>
-                          </div>
-
-                          <div className="flex items-center space-x-2 sm:space-x-3">
-                            <div className="flex items-center space-x-1 bg-slate-900 rounded-lg p-1 border border-slate-700">
-                              <button
-                                onClick={() => {
-                                  if (!activeStaff) {
-                                    if (onOpenLoginModal) onOpenLoginModal();
-                                    alert('🔒 Bạn chưa đăng nhập!');
-                                    return;
-                                  }
-                                  onRemoveServiceSubmit(activeInvoice.invoiceid, item.detailid, 1);
-                                }}
-                                className="p-1 hover:bg-slate-800 text-slate-300 rounded"
-                              >
-                                <Minus className="w-3 h-3" />
-                              </button>
-                              <span className="px-1.5 sm:px-2 font-bold text-emerald-400">{item.quantity}</span>
-                              <button
-                                onClick={() => {
-                                  if (!activeStaff) {
-                                    if (onOpenLoginModal) onOpenLoginModal();
-                                    alert('🔒 Bạn chưa đăng nhập!');
-                                    return;
-                                  }
-                                  onAddServiceSubmit(activeInvoice.invoiceid, item.productid, 1);
-                                }}
-                                className="p-1 hover:bg-slate-800 text-slate-300 rounded"
-                              >
-                                <Plus className="w-3 h-3" />
-                              </button>
+                      activeInvoice.details.map((item) => {
+                        const itemUnit = (item as any).unit || products.find((p) => p.productid === item.productid)?.unit || 'món';
+                        const itemTotal = item.totalprice ?? ((item as any).subtotal) ?? (item.unitprice * item.quantity);
+                        return (
+                          <div
+                            key={item.detailid}
+                            className="bg-slate-950 p-2.5 sm:p-3 rounded-xl border border-slate-800 flex items-center justify-between text-xs"
+                          >
+                            <div>
+                              <p className="font-semibold text-slate-100">{item.productname}</p>
+                              <p className="text-[11px] text-slate-400">
+                                {formatVND(item.unitprice)} / {itemUnit}
+                              </p>
                             </div>
-                            <span className="font-bold text-amber-300 min-w-[65px] sm:min-w-[70px] text-right">
-                              {formatVND(item.subtotal)}
-                            </span>
+
+                            <div className="flex items-center space-x-2 sm:space-x-3">
+                              <div className="flex items-center space-x-1 bg-slate-900 rounded-lg p-1 border border-slate-700">
+                                <button
+                                  onClick={() => {
+                                    if (!activeStaff) {
+                                      if (onOpenLoginModal) onOpenLoginModal();
+                                      alert('🔒 Bạn chưa đăng nhập!');
+                                      return;
+                                    }
+                                    onRemoveServiceSubmit(activeInvoice.invoiceid, item.detailid, 1);
+                                  }}
+                                  className="p-1 hover:bg-slate-800 text-slate-300 rounded"
+                                >
+                                  <Minus className="w-3 h-3" />
+                                </button>
+                                <span className="px-1.5 sm:px-2 font-bold text-emerald-400">{item.quantity}</span>
+                                <button
+                                  onClick={() => {
+                                    if (!activeStaff) {
+                                      if (onOpenLoginModal) onOpenLoginModal();
+                                      alert('🔒 Bạn chưa đăng nhập!');
+                                      return;
+                                    }
+                                    onAddServiceSubmit(activeInvoice.invoiceid, item.productid, 1);
+                                  }}
+                                  className="p-1 hover:bg-slate-800 text-slate-300 rounded"
+                                >
+                                  <Plus className="w-3 h-3" />
+                                </button>
+                              </div>
+                              <span className="font-bold text-amber-300 min-w-[65px] sm:min-w-[70px] text-right">
+                                {formatVND(itemTotal)}
+                              </span>
+                            </div>
                           </div>
-                        </div>
-                      ))
+                        );
+                      })
                     )}
                   </div>
                 </div>
@@ -400,7 +404,14 @@ export const TableDetailModal: React.FC<TableDetailModalProps> = ({
                 <div className="pt-3 border-t border-slate-800 space-y-2 mt-2">
                   <div className="flex justify-between text-xs text-slate-300">
                     <span>Tiền dịch vụ:</span>
-                    <span className="font-bold text-teal-300">{formatVND(activeInvoice?.servicefee || 0)}</span>
+                    <span className="font-bold text-teal-300">
+                      {formatVND(
+                        activeInvoice?.details?.reduce(
+                          (sum, item) => sum + (item.totalprice ?? (item as any).subtotal ?? (item.unitprice * item.quantity) ?? 0),
+                          0
+                        ) || activeInvoice?.servicefee || 0
+                      )}
+                    </span>
                   </div>
 
                   <div className="flex items-center space-x-2">

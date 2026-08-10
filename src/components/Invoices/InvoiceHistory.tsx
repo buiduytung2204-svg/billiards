@@ -12,18 +12,25 @@ export const InvoiceHistory: React.FC<InvoiceHistoryProps> = ({ invoices }) => {
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [selectedReprintInvoice, setSelectedReprintInvoice] = useState<Invoice | null>(null);
 
+  const isPaidInvoice = (inv: Invoice) => {
+    if (inv.status === (1 as any) || inv.status === 1) return true;
+    const st = String(inv.status || '').toUpperCase();
+    return st === 'PAID' || st === '1' || st === 'COMPLETED';
+  };
+
   const filteredInvoices = invoices.filter((i) => {
     if (!searchTerm) return true;
     const term = searchTerm.toLowerCase();
+    const tableName = i.tablename || (i.tableid ? `bàn ${i.tableid}` : '');
     return (
       i.invoiceid.toString().includes(term) ||
-      (i.tablename && i.tablename.toLowerCase().includes(term)) ||
+      tableName.toLowerCase().includes(term) ||
       (i.customername && i.customername.toLowerCase().includes(term))
     );
   });
 
-  const paidInvoices = invoices.filter((i) => i.status === 1);
-  const totalPaidRevenue = paidInvoices.reduce((sum, i) => sum + i.totalamount, 0);
+  const paidInvoices = invoices.filter(isPaidInvoice);
+  const totalPaidRevenue = paidInvoices.reduce((sum, i) => sum + (i.totalamount || 0), 0);
 
   if (selectedReprintInvoice) {
     return <ReceiptPrint invoice={selectedReprintInvoice} onClose={() => setSelectedReprintInvoice(null)} />;
@@ -98,37 +105,45 @@ export const InvoiceHistory: React.FC<InvoiceHistoryProps> = ({ invoices }) => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60">
-              {filteredInvoices.map((inv) => (
-                <tr key={inv.invoiceid} className="hover:bg-slate-800/40 transition">
-                  <td className="p-3.5 font-mono text-slate-400">#{inv.invoiceid}</td>
-                  <td className="p-3.5 font-bold text-white">{inv.tablename}</td>
-                  <td className="p-3.5 text-slate-300">{inv.customername || 'Khách vãng lai'}</td>
-                  <td className="p-3.5 text-slate-400">{formatDateTime(inv.starttime)}</td>
-                  <td className="p-3.5 font-mono text-amber-300">{formatVND(inv.tablefee)}</td>
-                  <td className="p-3.5 font-mono text-teal-300">{formatVND(inv.servicefee)}</td>
-                  <td className="p-3.5 font-mono font-bold text-emerald-400">{formatVND(inv.totalamount)}</td>
-                  <td className="p-3.5">
-                    <span
-                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
-                        inv.status === 1
-                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                          : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                      }`}
-                    >
-                      {inv.status === 1 ? 'Đã thanh toán' : 'Đang phục vụ'}
-                    </span>
-                  </td>
-                  <td className="p-3.5 text-right">
-                    <button
-                      onClick={() => setSelectedReprintInvoice(inv)}
-                      className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3 py-1.5 rounded-xl font-semibold transition flex items-center space-x-1 ml-auto text-xs"
-                    >
-                      <Printer className="w-3.5 h-3.5" />
-                      <span>Xem / In</span>
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {filteredInvoices.map((inv) => {
+                const isPaid = isPaidInvoice(inv);
+                const isCancelled = String(inv.status || '').toUpperCase() === 'CANCELLED' || inv.status === (2 as any);
+                const tableName = inv.tablename || (inv.tableid ? `Bàn ${inv.tableid}` : '--');
+
+                return (
+                  <tr key={inv.invoiceid} className="hover:bg-slate-800/40 transition">
+                    <td className="p-3.5 font-mono text-slate-400">#{inv.invoiceid}</td>
+                    <td className="p-3.5 font-bold text-white">{tableName}</td>
+                    <td className="p-3.5 text-slate-300">{inv.customername || 'Khách vãng lai'}</td>
+                    <td className="p-3.5 text-slate-400">{formatDateTime(inv.starttime)}</td>
+                    <td className="p-3.5 font-mono text-amber-300">{formatVND(inv.tablefee)}</td>
+                    <td className="p-3.5 font-mono text-teal-300">{formatVND(inv.servicefee)}</td>
+                    <td className="p-3.5 font-mono font-bold text-emerald-400">{formatVND(inv.totalamount)}</td>
+                    <td className="p-3.5">
+                      <span
+                        className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                          isPaid
+                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                            : isCancelled
+                            ? 'bg-slate-500/20 text-slate-400 border border-slate-500/30'
+                            : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                        }`}
+                      >
+                        {isPaid ? 'Đã thanh toán' : isCancelled ? 'Đã hủy' : 'Đang phục vụ'}
+                      </span>
+                    </td>
+                    <td className="p-3.5 text-right">
+                      <button
+                        onClick={() => setSelectedReprintInvoice(inv)}
+                        className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3 py-1.5 rounded-xl font-semibold transition flex items-center space-x-1 ml-auto text-xs"
+                      >
+                        <Printer className="w-3.5 h-3.5" />
+                        <span>Xem / In</span>
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
