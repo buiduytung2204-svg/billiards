@@ -302,12 +302,14 @@ class BilliardDatabase {
     // 4. CRITICAL PERSISTENCE CROSS-CHECK: Query active Playing invoices in Supabase and Memory
     let activeInvoices: Invoice[] = [];
     try {
-      const { data: activeDbInvs } = await supabase.from('invoices').select('*').eq('status', 'Playing');
-      if (activeDbInvs) activeInvoices = activeDbInvs as Invoice[];
+      const { data: activeDbInvs } = await supabase.from('invoices').select('*');
+      if (activeDbInvs) {
+        activeInvoices = activeDbInvs.filter((inv: any) => String(inv.status || '').toUpperCase() === 'PLAYING') as Invoice[];
+      }
     } catch (e) {}
 
     for (const inv of this.inMemoryInvoices) {
-      if (inv && (inv.status || '').toUpperCase() === 'PLAYING') {
+      if (inv && String(inv.status || '').toUpperCase() === 'PLAYING') {
         if (!activeInvoices.some((a) => Number(a.invoiceid) === Number(inv.invoiceid))) {
           activeInvoices.push(inv);
         }
@@ -327,7 +329,9 @@ class BilliardDatabase {
       if (activeInv) {
         table.status = TableStatus.PLAYING;
         table.current_invoice_id = activeInv.invoiceid;
-      } else if (table.status === TableStatus.PLAYING) {
+      } else if (String(table.status || '').toUpperCase() === 'PLAYING') {
+        table.status = TableStatus.PLAYING;
+      } else {
         table.status = TableStatus.EMPTY;
         table.current_invoice_id = null;
       }
@@ -668,7 +672,20 @@ class BilliardDatabase {
     }
 
     const maxMemId = this.inMemoryInvoices.length > 0 ? Math.max(...this.inMemoryInvoices.map((i) => Number(i.invoiceid) || 0)) : 1000;
-    const finalInvoiceId = newInvId || Math.max(1001, maxMemId + 1);
+    const finalInvoiceId = newInvId || Math.max(Date.now() % 10000000, maxMemId + 1);
+
+    if (!newInvId) {
+      try {
+        await supabase.from('invoices').upsert([{
+          invoiceid: finalInvoiceId,
+          tableid,
+          starttime: now,
+          status: 'Playing',
+          paymentmethod: 'Cash',
+          createdat: now,
+        }], { onConflict: 'invoiceid' });
+      } catch (e) {}
+    }
 
     const createdInv: Invoice = {
       ...invoicePayload,
@@ -705,15 +722,26 @@ class BilliardDatabase {
     this.persistState();
 
     try {
-      await supabase.from('tables').upsert([{
+      const { error: tblErr } = await supabase.from('tables').upsert([{
         tableid: table.tableid,
-        tablename: table.tablename,
+        tablename: table.tablename || `Bàn ${tableid}`,
         tabletype: table.tabletype || 'Bàn Bida',
         hourlyprice: table.hourlyprice || 70000,
         status: TableStatus.PLAYING,
         current_invoice_id: finalInvoiceId,
         zone: table.zone || 'Khu A',
       }], { onConflict: 'tableid' });
+
+      if (tblErr) {
+        await supabase.from('tables').upsert([{
+          tableid: table.tableid,
+          tablename: table.tablename || `Bàn ${tableid}`,
+          tabletype: table.tabletype || 'Bàn Bida',
+          hourlyprice: table.hourlyprice || 70000,
+          status: TableStatus.PLAYING,
+          zone: table.zone || 'Khu A',
+        }], { onConflict: 'tableid' });
+      }
     } catch (e) {}
 
     table.status = TableStatus.PLAYING;
