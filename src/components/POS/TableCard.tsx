@@ -13,13 +13,13 @@ interface TableCardProps {
 const tableStartTimesMap: Record<number, string> = {};
 
 function getStableStartTime(tableid: number, starttimeFromInvoice?: string | null, isPlaying?: boolean): string {
-  if (!isPlaying) {
-    delete tableStartTimesMap[tableid];
-    return new Date().toISOString();
-  }
   if (starttimeFromInvoice) {
     tableStartTimesMap[tableid] = starttimeFromInvoice;
     return starttimeFromInvoice;
+  }
+  if (!isPlaying) {
+    delete tableStartTimesMap[tableid];
+    return new Date().toISOString();
   }
   if (!tableStartTimesMap[tableid]) {
     tableStartTimesMap[tableid] = new Date().toISOString();

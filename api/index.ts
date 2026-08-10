@@ -1,6 +1,49 @@
 import express from 'express';
 import cors from 'cors';
 import { createClient } from '@supabase/supabase-js';
+import fs from 'fs';
+import path from 'path';
+
+const PERSIST_FILE_PATH = path.join('/tmp', 'billiards_app_state_v2.json');
+
+function loadPersistentData() {
+  try {
+    if (fs.existsSync(PERSIST_FILE_PATH)) {
+      const content = fs.readFileSync(PERSIST_FILE_PATH, 'utf-8');
+      return JSON.parse(content);
+    }
+  } catch (e) {}
+  return null;
+}
+
+function savePersistentData(data: any) {
+  try {
+    fs.writeFileSync(PERSIST_FILE_PATH, JSON.stringify(data), 'utf-8');
+  } catch (e) {}
+}
+
+async function ensureBaseDbSeeded() {
+  try {
+    const { data: st } = await supabase.from('staffs').select('staffid').eq('staffid', 1).single();
+    if (!st) {
+      await supabase.from('staffs').upsert([{
+        staffid: 1,
+        username: 'admin',
+        password: '123',
+        fullname: 'Quản lý hệ thống',
+        role: 'Manager',
+        status: 'Active'
+      }], { onConflict: 'staffid' });
+    }
+  } catch (e) {}
+
+  try {
+    const { data: tbls } = await supabase.from('tables').select('tableid').limit(1);
+    if (!tbls || tbls.length === 0) {
+      await supabase.from('tables').upsert(INITIAL_TABLES, { onConflict: 'tableid' });
+    }
+  } catch (e) {}
+}
 
 // --- SUPABASE CLIENT SETUP ---
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL || 'https://vmeehkajgihyiwciotfd.supabase.co';
@@ -177,18 +220,69 @@ class BilliardDatabase {
   private inMemoryVipRates = { Bronze: 0, Silver: 5, Gold: 10, Platinum: 15 };
   private activeTableInvoicesMap = new Map<number, Invoice>();
 
+  constructor() {
+    const saved = loadPersistentData();
+    if (saved) {
+      if (Array.isArray(saved.inMemoryInvoices) && saved.inMemoryInvoices.length > 0) {
+        this.inMemoryInvoices = saved.inMemoryInvoices;
+      }
+      if (Array.isArray(saved.inMemoryTables) && saved.inMemoryTables.length > 0) {
+        this.inMemoryTables = saved.inMemoryTables;
+      }
+      if (Array.isArray(saved.inMemoryProducts) && saved.inMemoryProducts.length > 0) {
+        this.inMemoryProducts = saved.inMemoryProducts;
+      }
+      if (Array.isArray(saved.inMemoryCustomers) && saved.inMemoryCustomers.length > 0) {
+        this.inMemoryCustomers = saved.inMemoryCustomers;
+      }
+      if (Array.isArray(saved.inMemoryBookings)) {
+        this.inMemoryBookings = saved.inMemoryBookings;
+      }
+      if (Array.isArray(saved.inMemoryStockTxs)) {
+        this.inMemoryStockTxs = saved.inMemoryStockTxs;
+      }
+    }
+  }
+
+  private persistState() {
+    savePersistentData({
+      inMemoryInvoices: this.inMemoryInvoices,
+      inMemoryTables: this.inMemoryTables,
+      inMemoryProducts: this.inMemoryProducts,
+      inMemoryCustomers: this.inMemoryCustomers,
+      inMemoryBookings: this.inMemoryBookings,
+      inMemoryStockTxs: this.inMemoryStockTxs,
+    });
+  }
+
   // 1. TABLES
   public async getTables(): Promise<BilliardTable[]> {
-    const { data, error } = await supabase.from('tables').select('*').order('tableid');
-    if (error || !data || data.length === 0) {
-      // Auto-seed tables to Supabase if empty
-      try {
-        await supabase.from('tables').upsert(INITIAL_TABLES, { onConflict: 'tableid' });
-      } catch (e) {}
-      return this.inMemoryTables;
+    let dbTables: BilliardTable[] = [];
+    try {
+      const { data } = await supabase.from('tables').select('*').order('tableid');
+      if (data && data.length > 0) {
+        dbTables = data as BilliardTable[];
+      }
+    } catch (e) {}
+
+    const tableMap = new Map<number, BilliardTable>();
+
+    for (const t of INITIAL_TABLES) {
+      tableMap.set(Number(t.tableid), { ...t });
     }
-    this.inMemoryTables = data as BilliardTable[];
-    return data as BilliardTable[];
+
+    for (const t of dbTables) {
+      const existing = tableMap.get(Number(t.tableid));
+      tableMap.set(Number(t.tableid), { ...existing, ...t });
+    }
+
+    for (const t of this.inMemoryTables) {
+      const existing = tableMap.get(Number(t.tableid));
+      tableMap.set(Number(t.tableid), { ...existing, ...t });
+    }
+
+    this.inMemoryTables = Array.from(tableMap.values()).sort((a, b) => a.tableid - b.tableid);
+    return this.inMemoryTables;
   }
 
   public async getTableById(tableid: number): Promise<BilliardTable | undefined> {
@@ -210,6 +304,7 @@ class BilliardDatabase {
         tableid: this.inMemoryTables.length > 0 ? Math.max(...this.inMemoryTables.map((t) => t.tableid)) + 1 : 1,
       };
       this.inMemoryTables.push(fallbackTable);
+      this.persistState();
       return fallbackTable;
     }
     return data as BilliardTable;
@@ -221,6 +316,7 @@ class BilliardDatabase {
       const idx = this.inMemoryTables.findIndex((t) => t.tableid === tableid);
       if (idx !== -1) {
         this.inMemoryTables[idx] = { ...this.inMemoryTables[idx], ...tData };
+        this.persistState();
         return this.inMemoryTables[idx];
       }
       throw new Error('Bàn không tồn tại!');
@@ -242,6 +338,7 @@ class BilliardDatabase {
           count++;
         }
       });
+      this.persistState();
       return count;
     }
     return data.length;
@@ -257,6 +354,7 @@ class BilliardDatabase {
       const idx = this.inMemoryTables.findIndex((t) => t.tableid === tableid);
       if (idx !== -1) {
         this.inMemoryTables.splice(idx, 1);
+        this.persistState();
         return true;
       }
       return false;
@@ -291,21 +389,31 @@ class BilliardDatabase {
 
     const mergedMap = new Map<number, Invoice>();
 
-    for (const dbi of dbInvoices) {
-      mergedMap.set(Number(dbi.invoiceid), dbi);
+    for (const memInv of this.inMemoryInvoices) {
+      if (memInv && memInv.invoiceid) {
+        mergedMap.set(Number(memInv.invoiceid), memInv);
+      }
     }
 
-    for (const memInv of this.inMemoryInvoices) {
-      const existing = mergedMap.get(Number(memInv.invoiceid));
+    for (const dbi of dbInvoices) {
+      const id = Number(dbi.invoiceid);
+      const existing = mergedMap.get(id);
       if (!existing) {
-        mergedMap.set(Number(memInv.invoiceid), memInv);
+        mergedMap.set(id, dbi);
       } else {
-        const memStatus = String(memInv.status || '').toUpperCase();
+        const memStatus = String(existing.status || '').toUpperCase();
         if (memStatus === 'PAID' || memStatus === 'CANCELLED') {
-          mergedMap.set(Number(memInv.invoiceid), {
+          mergedMap.set(id, {
+            ...dbi,
             ...existing,
-            ...memInv,
-            details: memInv.details && memInv.details.length > 0 ? memInv.details : existing.details,
+            details: existing.details && existing.details.length > 0 ? existing.details : dbi.details,
+          });
+        } else {
+          mergedMap.set(id, {
+            ...dbi,
+            ...existing,
+            starttime: existing.starttime || dbi.starttime,
+            details: existing.details && existing.details.length > 0 ? existing.details : dbi.details,
           });
         }
       }
@@ -336,6 +444,7 @@ class BilliardDatabase {
   }
 
   public async getOrCreateStableActiveInvoiceForTable(tableid: number): Promise<Invoice> {
+    await ensureBaseDbSeeded();
     const mapCached = this.activeTableInvoicesMap.get(tableid);
     if (mapCached && (mapCached.status || '').toUpperCase() === 'PLAYING') {
       return mapCached;
@@ -368,7 +477,27 @@ class BilliardDatabase {
     }
 
     const now = new Date().toISOString();
-    const newInvoiceId = 1000 + Number(tableid);
+
+    let dbInv: any = null;
+    try {
+      const { data: newInv } = await supabase.from('invoices').insert([{
+        tableid,
+        starttime: now,
+        createdat: now,
+        status: 'Playing',
+        paymentmethod: 'Cash',
+        playtime_minutes: 0,
+        tablefee: 0,
+        servicefee: 0,
+        discountamount: 0,
+        totalamount: 0,
+      }]).select().single();
+      if (newInv && newInv.invoiceid) {
+        dbInv = newInv;
+      }
+    } catch (e) {}
+
+    const newInvoiceId = dbInv?.invoiceid || (1000 + Number(tableid));
     const newInv: Invoice = {
       invoiceid: newInvoiceId,
       tableid,
@@ -390,26 +519,22 @@ class BilliardDatabase {
     this.activeTableInvoicesMap.set(tableid, newInv);
 
     try {
-      await supabase.from('invoices').insert([{
+      await supabase.from('tables').upsert([{
         tableid,
-        staffid: 1,
-        starttime: now,
-        createdat: now,
-        status: 'Playing',
-        paymentmethod: 'Cash',
-        playtime_minutes: 0,
-        tablefee: 0,
-        servicefee: 0,
-        discountamount: 0,
-        totalamount: 0,
-      }]);
-      await supabase.from('tables').update({ status: TableStatus.PLAYING, current_invoice_id: newInvoiceId }).eq('tableid', tableid);
+        tablename: table?.tablename || `Bàn ${tableid}`,
+        tabletype: table?.tabletype || 'Bàn Bida',
+        hourlyprice: table?.hourlyprice || 70000,
+        status: TableStatus.PLAYING,
+        current_invoice_id: newInvoiceId,
+        zone: table?.zone || 'Khu A',
+      }], { onConflict: 'tableid' });
     } catch (e) {}
 
     return newInv;
   }
 
   public async findOrCreateActiveInvoice(invoiceid: number, tableid?: number): Promise<Invoice> {
+    await ensureBaseDbSeeded();
     if (invoiceid) {
       let invoice = await this.getInvoiceById(invoiceid);
       if (invoice && (invoice.status || '').toUpperCase() === 'PLAYING') {
@@ -443,55 +568,18 @@ class BilliardDatabase {
 
     const matchedTableId = targetTable ? targetTable.tableid : (targetTableId || 1);
 
-    const now = new Date().toISOString();
-    const payload = {
-      tableid: matchedTableId,
-      customerid: null,
-      staffid: 1,
-      starttime: now,
-      playtime_minutes: 0,
-      tablefee: 0,
-      servicefee: 0,
-      discountamount: 0,
-      totalamount: 0,
-      status: 'Playing' as const,
-      paymentmethod: 'Cash' as const,
-      createdat: now,
-    };
-
-    try {
-      const { data: newInv } = await supabase.from('invoices').insert([payload]).select().single();
-      if (newInv) {
-        await supabase.from('tables').update({ status: TableStatus.PLAYING, current_invoice_id: newInv.invoiceid }).eq('tableid', matchedTableId);
-        return { ...newInv, details: [] } as Invoice;
-      }
-    } catch (e) {}
-
-    const fallbackInv: Invoice = {
-      ...payload,
-      customerid: undefined,
-      invoiceid: invoiceid || (1000 + matchedTableId),
-      details: [],
-    };
-    this.inMemoryInvoices.unshift(fallbackInv);
-    if (targetTable) {
-      targetTable.status = TableStatus.PLAYING;
-      targetTable.current_invoice_id = fallbackInv.invoiceid;
-    }
-    return fallbackInv;
+    return this.getOrCreateStableActiveInvoiceForTable(matchedTableId);
   }
 
   public async openTable(tableid: number, customerid?: number, staffid: number = 1): Promise<Invoice> {
+    await ensureBaseDbSeeded();
+
     const table = await this.getTableById(tableid);
     if (!table) throw new Error('Bàn không tồn tại!');
 
-    const rawStatus = (table.status || '').toUpperCase();
-    const isCurrentlyPlaying = rawStatus === 'PLAYING' || table.status === TableStatus.PLAYING;
-
-    // Check if there is an active invoice in DB for this table
     const invoices = await this.getInvoices();
     const existingActiveInvoice = invoices.find(
-      (inv) => Number(inv.tableid) === Number(tableid) && (inv.status || '').toUpperCase() === 'PLAYING'
+      (inv) => Number(inv.tableid) === Number(tableid) && String(inv.status || '').toUpperCase() === 'PLAYING'
     );
 
     if (existingActiveInvoice) {
@@ -503,7 +591,6 @@ class BilliardDatabase {
     const validCustomerId = customerid && Number(customerid) > 0 ? Number(customerid) : null;
     const validStaffId = staffid && Number(staffid) > 0 ? Number(staffid) : 1;
 
-    // Ensure table exists in Supabase table before creating invoice
     try {
       await supabase.from('tables').upsert([{
         tableid: table.tableid,
@@ -515,10 +602,26 @@ class BilliardDatabase {
       }], { onConflict: 'tableid' });
     } catch (e) {}
 
-    const invoicePayload = {
+    let safeCustomerId: number | null = null;
+    if (validCustomerId) {
+      try {
+        const { data: cust } = await supabase.from('customers').select('customerid').eq('customerid', validCustomerId).single();
+        if (cust) safeCustomerId = validCustomerId;
+      } catch (e) {}
+    }
+
+    let safeStaffId: number | null = null;
+    if (validStaffId) {
+      try {
+        const { data: st } = await supabase.from('staffs').select('staffid').eq('staffid', validStaffId).single();
+        if (st) safeStaffId = validStaffId;
+      } catch (e) {}
+    }
+
+    const invoicePayload: any = {
       tableid,
-      customerid: validCustomerId,
-      staffid: validStaffId,
+      customerid: safeCustomerId,
+      staffid: safeStaffId,
       starttime: now,
       playtime_minutes: 0,
       tablefee: 0,
@@ -530,11 +633,50 @@ class BilliardDatabase {
       createdat: now,
     };
 
-    const { data: newInv, error: invErr } = await supabase.from('invoices').insert([invoicePayload]).select().single();
+    let newInvId: number | null = null;
+    let insertedDbInv: any = null;
+
+    try {
+      const { data: newInv } = await supabase.from('invoices').insert([invoicePayload]).select().single();
+      if (newInv && newInv.invoiceid) {
+        newInvId = newInv.invoiceid;
+        insertedDbInv = newInv;
+      } else {
+        const { data: retryInv } = await supabase.from('invoices').insert([{
+          tableid,
+          starttime: now,
+          status: 'Playing',
+          paymentmethod: 'Cash',
+          createdat: now,
+        }]).select().single();
+        if (retryInv && retryInv.invoiceid) {
+          newInvId = retryInv.invoiceid;
+          insertedDbInv = retryInv;
+        }
+      }
+    } catch (e) {
+      try {
+        const { data: retryInv } = await supabase.from('invoices').insert([{
+          tableid,
+          starttime: now,
+          status: 'Playing',
+          paymentmethod: 'Cash',
+          createdat: now,
+        }]).select().single();
+        if (retryInv && retryInv.invoiceid) {
+          newInvId = retryInv.invoiceid;
+          insertedDbInv = retryInv;
+        }
+      } catch (e2) {}
+    }
+
+    const maxMemId = this.inMemoryInvoices.length > 0 ? Math.max(...this.inMemoryInvoices.map((i) => Number(i.invoiceid) || 0)) : 1000;
+    const finalInvoiceId = newInvId || Math.max(1001, maxMemId + 1);
 
     const createdInv: Invoice = {
-      ...(newInv || invoicePayload),
-      invoiceid: newInv?.invoiceid || (this.inMemoryInvoices.length > 0 ? Math.max(...this.inMemoryInvoices.map((i) => i.invoiceid)) + 1 : 1001),
+      ...invoicePayload,
+      ...(insertedDbInv || {}),
+      invoiceid: finalInvoiceId,
       tableid,
       customerid: validCustomerId || undefined,
       status: 'Playing',
@@ -547,16 +689,38 @@ class BilliardDatabase {
     this.inMemoryInvoices.unshift(createdInv);
     this.activeTableInvoicesMap.set(tableid, createdInv);
 
-    // Update table status in Supabase
-    try {
-      await supabase.from('tables').update({
+    const inMemTable = this.inMemoryTables.find((t) => Number(t.tableid) === Number(tableid));
+    if (inMemTable) {
+      inMemTable.status = TableStatus.PLAYING;
+      inMemTable.current_invoice_id = finalInvoiceId;
+    } else {
+      this.inMemoryTables.push({
+        tableid,
+        tablename: table.tablename || `Bàn ${tableid}`,
+        tabletype: table.tabletype || 'Bàn Bida',
+        hourlyprice: table.hourlyprice || 70000,
         status: TableStatus.PLAYING,
-        current_invoice_id: createdInv.invoiceid,
-      }).eq('tableid', tableid);
+        current_invoice_id: finalInvoiceId,
+        zone: table.zone || 'Khu A',
+      });
+    }
+
+    this.persistState();
+
+    try {
+      await supabase.from('tables').upsert([{
+        tableid: table.tableid,
+        tablename: table.tablename,
+        tabletype: table.tabletype || 'Bàn Bida',
+        hourlyprice: table.hourlyprice || 70000,
+        status: TableStatus.PLAYING,
+        current_invoice_id: finalInvoiceId,
+        zone: table.zone || 'Khu A',
+      }], { onConflict: 'tableid' });
     } catch (e) {}
 
     table.status = TableStatus.PLAYING;
-    table.current_invoice_id = createdInv.invoiceid;
+    table.current_invoice_id = finalInvoiceId;
 
     return createdInv;
   }
@@ -566,27 +730,24 @@ class BilliardDatabase {
     const table = await this.getTableById(tableid);
     if (!table) throw new Error('Bàn không tồn tại!');
 
-    // Find active invoice by current_invoice_id or search invoices for active playing invoice
-    let invoice: Invoice | undefined;
-    if (table.current_invoice_id) {
-      invoice = await this.getInvoiceById(table.current_invoice_id);
-    }
-    if (!invoice) {
-      const invoices = await this.getInvoices();
-      invoice = invoices.find(
-        (i) => Number(i.tableid) === Number(tableid) && (i.status || '').toUpperCase() === 'PLAYING'
-      );
-    }
+    const invoices = await this.getInvoices();
+    const invoice = invoices.find(
+      (i) => Number(i.tableid) === Number(tableid) && String(i.status || '').toUpperCase() === 'PLAYING'
+    );
 
     if (invoice) {
+      const invId = Number(invoice.invoiceid);
       try {
-        await supabase.from('invoices').update({ status: 'Cancelled' }).eq('invoiceid', invoice.invoiceid);
+        await supabase.from('invoices').update({ status: 'Cancelled' }).eq('invoiceid', invId);
       } catch (e) {}
 
-      const inMemInv = this.inMemoryInvoices.find((i) => Number(i.invoiceid) === Number(invoice!.invoiceid));
-      if (inMemInv) inMemInv.status = 'Cancelled';
+      this.inMemoryInvoices = this.inMemoryInvoices.map((i) => {
+        if (Number(i.invoiceid) === invId) {
+          return { ...i, status: 'Cancelled' };
+        }
+        return i;
+      });
 
-      // Restore product stock
       for (const item of invoice.details || []) {
         const prod = await this.getProductById(item.productid);
         if (prod) {
@@ -607,6 +768,8 @@ class BilliardDatabase {
       inMemTable.status = TableStatus.EMPTY;
       inMemTable.current_invoice_id = null;
     }
+
+    this.persistState();
 
     return { ...table, status: TableStatus.EMPTY, current_invoice_id: null };
   }
@@ -892,6 +1055,8 @@ class BilliardDatabase {
       inMemTable.status = TableStatus.EMPTY;
       inMemTable.current_invoice_id = null;
     }
+
+    this.persistState();
 
     const finalInvoice = await this.getInvoiceById(invoice.invoiceid);
     const invoiceToReturn = finalInvoice || inMemInv;
@@ -1326,7 +1491,11 @@ apiRouter.get('/tables', async (req, res) => {
         }
 
         const rawStatus = (t.status || '').toUpperCase();
-        const isPlaying = !!activeInvoice;
+        let isPlaying = rawStatus === 'PLAYING' || rawStatus === 'BUSY' || !!activeInvoice;
+
+        if (isPlaying && !activeInvoice) {
+          activeInvoice = await db.getOrCreateStableActiveInvoiceForTable(t.tableid);
+        }
 
         return {
           ...t,

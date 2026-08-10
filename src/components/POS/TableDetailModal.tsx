@@ -20,13 +20,13 @@ interface TableDetailModalProps {
 const modalStartTimesMap: Record<number, string> = {};
 
 function getModalStableStartTime(tableid: number, starttimeFromInvoice?: string | null, isPlaying?: boolean): string {
-  if (!isPlaying) {
-    delete modalStartTimesMap[tableid];
-    return new Date().toISOString();
-  }
   if (starttimeFromInvoice) {
     modalStartTimesMap[tableid] = starttimeFromInvoice;
     return starttimeFromInvoice;
+  }
+  if (!isPlaying) {
+    delete modalStartTimesMap[tableid];
+    return new Date().toISOString();
   }
   if (!modalStartTimesMap[tableid]) {
     modalStartTimesMap[tableid] = new Date().toISOString();
