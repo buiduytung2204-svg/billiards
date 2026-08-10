@@ -13,7 +13,22 @@ interface CheckoutModalProps {
 }
 
 export const CheckoutModal: React.FC<CheckoutModalProps> = ({ table, customers, onClose, onSuccessCheckout }) => {
-  const activeInvoice = table.activeInvoice;
+  const rawStatus = (table.status || '').toUpperCase();
+  const isPlaying = rawStatus === 'PLAYING' || !!table.activeInvoice;
+
+  const activeInvoice = table.activeInvoice || (isPlaying ? {
+    invoiceid: table.current_invoice_id || (1000 + table.tableid),
+    tableid: table.tableid,
+    starttime: new Date().toISOString(),
+    playtime_minutes: 0,
+    tablefee: 0,
+    servicefee: 0,
+    discountamount: 0,
+    totalamount: 0,
+    status: 'Playing',
+    paymentmethod: 'Cash',
+    details: [],
+  } : null);
 
   const [selectedCustomerId, setSelectedCustomerId] = useState<number | undefined>(
     activeInvoice?.customerid || undefined

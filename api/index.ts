@@ -297,7 +297,20 @@ class BilliardDatabase {
   public async openTable(tableid: number, customerid?: number, staffid: number = 1): Promise<Invoice> {
     const table = await this.getTableById(tableid);
     if (!table) throw new Error('Bàn không tồn tại!');
-    if (table.status === TableStatus.PLAYING) throw new Error('Bàn đang có người chơi!');
+
+    const rawStatus = (table.status || '').toUpperCase();
+    const isCurrentlyPlaying = rawStatus === 'PLAYING' || table.status === TableStatus.PLAYING;
+
+    // Check if there is an active invoice in DB for this table
+    const invoices = await this.getInvoices();
+    const existingActiveInvoice = invoices.find(
+      (inv) => Number(inv.tableid) === Number(tableid) && (inv.status || '').toUpperCase() === 'PLAYING'
+    );
+
+    // Only throw error if table is currently playing AND actually has an active playing invoice
+    if (isCurrentlyPlaying && existingActiveInvoice) {
+      throw new Error('Bàn đang có người chơi!');
+    }
 
     const now = new Date().toISOString();
     const validCustomerId = customerid && Number(customerid) > 0 ? Number(customerid) : null;
@@ -888,9 +901,37 @@ apiRouter.get('/tables', async (req, res) => {
     const tables = await db.getTables();
     const invoices = await db.getInvoices();
     const result = tables.map((t) => {
-      const activeInvoice = t.current_invoice_id ? invoices.find((i) => i.invoiceid === t.current_invoice_id) : undefined;
+      // Find active playing invoice by current_invoice_id OR by tableid with status 'Playing'/'PLAYING'
+      let activeInvoice = t.current_invoice_id ? invoices.find((i) => Number(i.invoiceid) === Number(t.current_invoice_id)) : undefined;
+      if (!activeInvoice) {
+        activeInvoice = invoices.find((i) => Number(i.tableid) === Number(t.tableid) && (i.status || '').toUpperCase() === 'PLAYING');
+      }
+
+      const rawStatus = (t.status || '').toUpperCase();
+      const isPlaying = rawStatus === 'PLAYING' || !!activeInvoice;
+
+      if (isPlaying && !activeInvoice) {
+        const now = new Date().toISOString();
+        activeInvoice = {
+          invoiceid: t.current_invoice_id || (1000 + t.tableid),
+          tableid: t.tableid,
+          staffid: 1,
+          starttime: now,
+          createdat: now,
+          playtime_minutes: 0,
+          tablefee: 0,
+          servicefee: 0,
+          discountamount: 0,
+          totalamount: 0,
+          status: 'Playing',
+          paymentmethod: 'Cash',
+          details: [],
+        };
+      }
+
       return {
         ...t,
+        status: isPlaying ? TableStatus.PLAYING : (rawStatus === 'RESERVED' || rawStatus === 'BOOKED' ? TableStatus.RESERVED : TableStatus.EMPTY),
         activeInvoice: activeInvoice || null,
       };
     });
