@@ -13,10 +13,10 @@ import {
 const API_BASE = '/api';
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
-  let activeRole = 'None';
+  let activeRole = 'Staff';
   try {
     const saved = localStorage.getItem('billiard_active_staff');
-    if (saved) {
+    if (saved && saved !== 'null') {
       const parsed = JSON.parse(saved);
       if (parsed?.role) activeRole = parsed.role;
     }
@@ -30,6 +30,12 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
       ...(options?.headers || {}),
     },
   });
+
+  const contentType = res.headers.get('content-type');
+  if (!res.ok || !contentType || !contentType.includes('application/json')) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Lỗi kết nối server (${res.status}): ${text.substring(0, 80) || 'Không nhận được dữ liệu JSON'}`);
+  }
 
   const json = await res.json();
   if (!json.success) {

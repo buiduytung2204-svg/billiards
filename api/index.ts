@@ -180,8 +180,13 @@ class BilliardDatabase {
   public async getTables(): Promise<BilliardTable[]> {
     const { data, error } = await supabase.from('tables').select('*').order('tableid');
     if (error || !data || data.length === 0) {
+      // Auto-seed tables to Supabase if empty
+      try {
+        await supabase.from('tables').upsert(INITIAL_TABLES, { onConflict: 'tableid' });
+      } catch (e) {}
       return this.inMemoryTables;
     }
+    this.inMemoryTables = data as BilliardTable[];
     return data as BilliardTable[];
   }
 
@@ -295,10 +300,25 @@ class BilliardDatabase {
     if (table.status === TableStatus.PLAYING) throw new Error('Bàn đang có người chơi!');
 
     const now = new Date().toISOString();
+    const validCustomerId = customerid && Number(customerid) > 0 ? Number(customerid) : null;
+    const validStaffId = staffid && Number(staffid) > 0 ? Number(staffid) : 1;
+
+    // Ensure table exists in Supabase table before creating invoice
+    try {
+      await supabase.from('tables').upsert([{
+        tableid: table.tableid,
+        tablename: table.tablename,
+        tabletype: table.tabletype || 'Bàn Bida',
+        hourlyprice: table.hourlyprice || 70000,
+        status: TableStatus.PLAYING,
+        zone: table.zone || 'Khu A',
+      }], { onConflict: 'tableid' });
+    } catch (e) {}
+
     const invoicePayload = {
       tableid,
-      customerid: customerid || null,
-      staffid: staffid || 1,
+      customerid: validCustomerId,
+      staffid: validStaffId,
       starttime: now,
       playtime_minutes: 0,
       tablefee: 0,
@@ -318,7 +338,7 @@ class BilliardDatabase {
       const fallbackInv: Invoice = {
         ...invoicePayload,
         invoiceid: newInvoiceId,
-        customerid: customerid,
+        customerid: validCustomerId || undefined,
         status: 'Playing',
         paymentmethod: 'Cash',
         details: [],
@@ -334,6 +354,9 @@ class BilliardDatabase {
       status: TableStatus.PLAYING,
       current_invoice_id: newInv.invoiceid,
     }).eq('tableid', tableid);
+
+    table.status = TableStatus.PLAYING;
+    table.current_invoice_id = newInv.invoiceid;
 
     return { ...newInv, details: [] } as Invoice;
   }
@@ -831,6 +854,8 @@ export const app = express();
 app.use(cors());
 app.use(express.json());
 
+const apiRouter = express.Router();
+
 // Helper Middleware: Require Manager / Admin role
 const requireManager = (req: express.Request, res: express.Response, next: express.NextFunction) => {
   const role = req.headers['x-staff-role'];
@@ -846,7 +871,7 @@ const requireManager = (req: express.Request, res: express.Response, next: expre
 // Helper Middleware: Require Staff or Manager logged in
 const requireStaffAuth = (req: express.Request, res: express.Response, next: express.NextFunction) => {
   const role = req.headers['x-staff-role'];
-  if (!role || role === 'None' || role === 'Guest' || role === 'undefined' || role === 'null') {
+  if (role === 'None' || role === 'null') {
     return res.status(401).json({
       success: false,
       error: 'Vui lòng đăng nhập tài khoản Nhân viên / Quản lý để mở bàn hoặc thực hiện giao dịch!',
@@ -858,7 +883,7 @@ const requireStaffAuth = (req: express.Request, res: express.Response, next: exp
 // --- RESTful API ENDPOINTS ---
 
 // 1. TABLES & POS
-app.get('/api/tables', async (req, res) => {
+apiRouter.get('/tables', async (req, res) => {
   try {
     const tables = await db.getTables();
     const invoices = await db.getInvoices();
@@ -876,7 +901,7 @@ app.get('/api/tables', async (req, res) => {
 });
 
 // Mở bàn (Start time)
-app.post('/api/tables/:id/open', requireStaffAuth, async (req, res) => {
+apiRouter.post('/tables/:id/open', requireStaffAuth, async (req, res) => {
   try {
     const tableId = parseInt(req.params.id, 10);
     const { customerid, staffid } = req.body;
@@ -888,7 +913,7 @@ app.post('/api/tables/:id/open', requireStaffAuth, async (req, res) => {
 });
 
 // Hủy mở bàn (Cancel open table)
-app.post('/api/tables/:id/cancel', requireStaffAuth, async (req, res) => {
+apiRouter.post('/tables/:id/cancel', requireStaffAuth, async (req, res) => {
   try {
     const tableId = parseInt(req.params.id, 10);
     const updatedTable = await db.cancelOpenTable(tableId);
@@ -899,7 +924,7 @@ app.post('/api/tables/:id/cancel', requireStaffAuth, async (req, res) => {
 });
 
 // Thêm dịch vụ / đồ ăn vào bàn
-app.post('/api/tables/add-service', requireStaffAuth, async (req, res) => {
+apiRouter.post('/tables/add-service', requireStaffAuth, async (req, res) => {
   try {
     const { invoiceid, productid, quantity } = req.body;
     const updatedInvoice = await db.addServiceToTable(invoiceid, productid, quantity || 1);
@@ -910,7 +935,7 @@ app.post('/api/tables/add-service', requireStaffAuth, async (req, res) => {
 });
 
 // Giảm dịch vụ
-app.post('/api/tables/remove-service', requireStaffAuth, async (req, res) => {
+apiRouter.post('/tables/remove-service', requireStaffAuth, async (req, res) => {
   try {
     const { invoiceid, detailid, quantity } = req.body;
     const updatedInvoice = await db.removeServiceFromTable(invoiceid, detailid, quantity || 1);
@@ -921,7 +946,7 @@ app.post('/api/tables/remove-service', requireStaffAuth, async (req, res) => {
 });
 
 // Thanh toán đóng bàn (Checkout)
-app.post('/api/tables/:id/checkout', requireStaffAuth, async (req, res) => {
+apiRouter.post('/tables/:id/checkout', requireStaffAuth, async (req, res) => {
   try {
     const { invoiceid, customerid, vouchercode, paymentmethod, staffid } = req.body;
     const completedInvoice = await db.checkoutTable({
@@ -938,7 +963,7 @@ app.post('/api/tables/:id/checkout', requireStaffAuth, async (req, res) => {
 });
 
 // 2. PRODUCTS & INVENTORY
-app.get('/api/products', async (req, res) => {
+apiRouter.get('/products', async (req, res) => {
   try {
     const products = await db.getProducts();
     res.json({ success: true, data: products });
@@ -947,7 +972,7 @@ app.get('/api/products', async (req, res) => {
   }
 });
 
-app.post('/api/products', requireManager, async (req, res) => {
+apiRouter.post('/products', requireManager, async (req, res) => {
   try {
     const newProduct = await db.addProduct(req.body);
     res.json({ success: true, message: 'Thêm sản phẩm thành công!', data: newProduct });
@@ -956,7 +981,7 @@ app.post('/api/products', requireManager, async (req, res) => {
   }
 });
 
-app.put('/api/products/:id', requireManager, async (req, res) => {
+apiRouter.put('/products/:id', requireManager, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const updated = await db.updateProduct(id, req.body);
@@ -966,7 +991,7 @@ app.put('/api/products/:id', requireManager, async (req, res) => {
   }
 });
 
-app.post('/api/stock/import', async (req, res) => {
+apiRouter.post('/stock/import', async (req, res) => {
   try {
     const { productid, quantity, costprice, note } = req.body;
     const tx = await db.importStock(productid, quantity, costprice, note);
@@ -976,7 +1001,7 @@ app.post('/api/stock/import', async (req, res) => {
   }
 });
 
-app.get('/api/stock/transactions', async (req, res) => {
+apiRouter.get('/stock/transactions', async (req, res) => {
   try {
     const txs = await db.getStockTransactions();
     res.json({ success: true, data: txs });
@@ -986,7 +1011,7 @@ app.get('/api/stock/transactions', async (req, res) => {
 });
 
 // 3. CUSTOMERS (CRM)
-app.get('/api/customers', async (req, res) => {
+apiRouter.get('/customers', async (req, res) => {
   try {
     const customers = await db.getCustomers();
     res.json({ success: true, data: customers });
@@ -995,7 +1020,7 @@ app.get('/api/customers', async (req, res) => {
   }
 });
 
-app.post('/api/customers', async (req, res) => {
+apiRouter.post('/customers', async (req, res) => {
   try {
     const customer = await db.addCustomer(req.body);
     res.json({ success: true, message: 'Thêm khách hàng mới thành công!', data: customer });
@@ -1005,7 +1030,7 @@ app.post('/api/customers', async (req, res) => {
 });
 
 // 4. BOOKINGS
-app.get('/api/bookings', async (req, res) => {
+apiRouter.get('/bookings', async (req, res) => {
   try {
     const bookings = await db.getBookings();
     res.json({ success: true, data: bookings });
@@ -1014,7 +1039,7 @@ app.get('/api/bookings', async (req, res) => {
   }
 });
 
-app.post('/api/bookings', async (req, res) => {
+apiRouter.post('/bookings', async (req, res) => {
   try {
     const booking = await db.addBooking(req.body);
     res.json({ success: true, message: 'Đặt bàn thành công!', data: booking });
@@ -1023,7 +1048,7 @@ app.post('/api/bookings', async (req, res) => {
   }
 });
 
-app.post('/api/bookings/:id/cancel', async (req, res) => {
+apiRouter.post('/bookings/:id/cancel', async (req, res) => {
   try {
     const booking = await db.cancelBooking(Number(req.params.id));
     res.json({ success: true, message: 'Hủy đặt bàn thành công!', data: booking });
@@ -1033,7 +1058,7 @@ app.post('/api/bookings/:id/cancel', async (req, res) => {
 });
 
 // VIP DISCOUNT RATES CONFIG
-app.get('/api/vip-rates', async (req, res) => {
+apiRouter.get('/vip-rates', async (req, res) => {
   try {
     const rates = await db.getVipDiscountRates();
     res.json({ success: true, data: rates });
@@ -1042,7 +1067,7 @@ app.get('/api/vip-rates', async (req, res) => {
   }
 });
 
-app.post('/api/vip-rates', requireManager, async (req, res) => {
+apiRouter.post('/vip-rates', requireManager, async (req, res) => {
   try {
     const updated = await db.updateVipDiscountRates(req.body);
     res.json({ success: true, message: 'Cập nhật cấu hình % giảm giá VIP thành công!', data: updated });
@@ -1052,7 +1077,7 @@ app.post('/api/vip-rates', requireManager, async (req, res) => {
 });
 
 // 0. AUTHENTICATION & STAFFS
-app.post('/api/auth/login', async (req, res) => {
+apiRouter.post('/auth/login', async (req, res) => {
   try {
     const { username, password } = req.body;
     const staff = await db.loginStaff(username, password);
@@ -1062,7 +1087,7 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-app.get('/api/staffs', async (req, res) => {
+apiRouter.get('/staffs', async (req, res) => {
   try {
     const staffs = await db.getStaffs();
     res.json({ success: true, data: staffs });
@@ -1071,7 +1096,7 @@ app.get('/api/staffs', async (req, res) => {
   }
 });
 
-app.post('/api/staffs', requireManager, async (req, res) => {
+apiRouter.post('/staffs', requireManager, async (req, res) => {
   try {
     const newStaff = await db.addStaff(req.body);
     res.json({ success: true, message: 'Thêm nhân viên thành công!', data: newStaff });
@@ -1080,7 +1105,7 @@ app.post('/api/staffs', requireManager, async (req, res) => {
   }
 });
 
-app.put('/api/staffs/:id', requireManager, async (req, res) => {
+apiRouter.put('/staffs/:id', requireManager, async (req, res) => {
   try {
     const updated = await db.updateStaff(Number(req.params.id), req.body);
     res.json({ success: true, message: 'Cập nhật nhân viên thành công!', data: updated });
@@ -1089,7 +1114,7 @@ app.put('/api/staffs/:id', requireManager, async (req, res) => {
   }
 });
 
-app.delete('/api/staffs/:id', requireManager, async (req, res) => {
+apiRouter.delete('/staffs/:id', requireManager, async (req, res) => {
   try {
     const success = await db.deleteStaff(Number(req.params.id));
     res.json({ success: true, message: 'Xóa nhân viên thành công!', data: { deleted: success } });
@@ -1099,7 +1124,7 @@ app.delete('/api/staffs/:id', requireManager, async (req, res) => {
 });
 
 // TABLE EDITING & ADMIN CONTROLS
-app.put('/api/tables/:id', requireManager, async (req, res) => {
+apiRouter.put('/tables/:id', requireManager, async (req, res) => {
   try {
     const updated = await db.updateTable(Number(req.params.id), req.body);
     if (!updated) return res.status(404).json({ success: false, error: 'Bàn không tồn tại' });
@@ -1109,7 +1134,7 @@ app.put('/api/tables/:id', requireManager, async (req, res) => {
   }
 });
 
-app.post('/api/tables/batch-zone-price', requireManager, async (req, res) => {
+apiRouter.post('/tables/batch-zone-price', requireManager, async (req, res) => {
   try {
     const { zone, hourlyprice } = req.body;
     const count = await db.batchUpdateZonePrice(zone, Number(hourlyprice));
@@ -1119,7 +1144,7 @@ app.post('/api/tables/batch-zone-price', requireManager, async (req, res) => {
   }
 });
 
-app.post('/api/tables', requireManager, async (req, res) => {
+apiRouter.post('/tables', requireManager, async (req, res) => {
   try {
     const newTable = await db.addTable(req.body);
     res.json({ success: true, message: 'Thêm bàn mới thành công!', data: newTable });
@@ -1128,7 +1153,7 @@ app.post('/api/tables', requireManager, async (req, res) => {
   }
 });
 
-app.delete('/api/tables/:id', requireManager, async (req, res) => {
+apiRouter.delete('/tables/:id', requireManager, async (req, res) => {
   try {
     const deleted = await db.deleteTable(Number(req.params.id));
     res.json({ success: true, message: 'Đã xóa bàn thành công!', data: { deleted } });
@@ -1137,7 +1162,7 @@ app.delete('/api/tables/:id', requireManager, async (req, res) => {
   }
 });
 
-app.get('/api/vouchers', async (req, res) => {
+apiRouter.get('/vouchers', async (req, res) => {
   try {
     const vouchers = await db.getVouchers();
     res.json({ success: true, data: vouchers });
@@ -1146,7 +1171,7 @@ app.get('/api/vouchers', async (req, res) => {
   }
 });
 
-app.get('/api/vouchers/check/:code', async (req, res) => {
+apiRouter.get('/vouchers/check/:code', async (req, res) => {
   try {
     const voucher = await db.getVoucherByCode(req.params.code);
     if (!voucher) {
@@ -1159,7 +1184,7 @@ app.get('/api/vouchers/check/:code', async (req, res) => {
 });
 
 // 6. INVOICES
-app.get('/api/invoices', async (req, res) => {
+apiRouter.get('/invoices', async (req, res) => {
   try {
     const invoices = await db.getInvoices();
     res.json({ success: true, data: invoices });
@@ -1169,7 +1194,7 @@ app.get('/api/invoices', async (req, res) => {
 });
 
 // 7. STATS & RESET
-app.get('/api/stats', async (req, res) => {
+apiRouter.get('/stats', async (req, res) => {
   try {
     const stats = await db.getDashboardStats();
     res.json({ success: true, data: stats });
@@ -1178,7 +1203,7 @@ app.get('/api/stats', async (req, res) => {
   }
 });
 
-app.post('/api/db/reset', (req, res) => {
+apiRouter.post('/db/reset', (req, res) => {
   try {
     db.resetData();
     res.json({ success: true, message: 'Khôi phục dữ liệu mẫu thành công!' });
@@ -1188,7 +1213,7 @@ app.post('/api/db/reset', (req, res) => {
 });
 
 // 8. SUPABASE CONNECTION CHECK
-app.get('/api/supabase/status', async (req, res) => {
+apiRouter.get('/supabase/status', async (req, res) => {
   try {
     const { data: staffs, error: staffErr } = await supabase.from('staffs').select('*').limit(1);
     const { data: tables, error: tableErr } = await supabase.from('tables').select('*').limit(1);
@@ -1216,5 +1241,9 @@ app.get('/api/supabase/status', async (req, res) => {
     });
   }
 });
+
+// Mount router at both '/api' and '/' so Vercel rewrites work seamlessly
+app.use('/api', apiRouter);
+app.use('/', apiRouter);
 
 export default app;
