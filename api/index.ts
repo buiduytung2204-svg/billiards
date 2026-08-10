@@ -285,7 +285,7 @@ class BilliardDatabase {
   public async getInvoiceById(invoiceid: number): Promise<Invoice | undefined> {
     const { data: inv } = await supabase.from('invoices').select('*').eq('invoiceid', invoiceid).single();
     if (!inv) {
-      return this.inMemoryInvoices.find((i) => i.invoiceid === invoiceid);
+      return this.inMemoryInvoices.find((i) => Number(i.invoiceid) === Number(invoiceid));
     }
     const { data: details } = await supabase.from('invoice_details').select('*').eq('invoiceid', invoiceid);
     return {
@@ -377,14 +377,27 @@ class BilliardDatabase {
   public async cancelOpenTable(tableid: number): Promise<BilliardTable> {
     const table = await this.getTableById(tableid);
     if (!table) throw new Error('Bàn không tồn tại!');
-    if (!table.current_invoice_id) throw new Error('Bàn đang trống!');
 
-    const invoice = await this.getInvoiceById(table.current_invoice_id);
+    // Find active invoice by current_invoice_id or search invoices for active playing invoice
+    let invoice: Invoice | undefined;
+    if (table.current_invoice_id) {
+      invoice = await this.getInvoiceById(table.current_invoice_id);
+    }
+    if (!invoice) {
+      const invoices = await this.getInvoices();
+      invoice = invoices.find(
+        (i) => Number(i.tableid) === Number(tableid) && (i.status || '').toUpperCase() === 'PLAYING'
+      );
+    }
+
     if (invoice) {
       await supabase.from('invoices').update({ status: 'Cancelled' }).eq('invoiceid', invoice.invoiceid);
 
+      const inMemInv = this.inMemoryInvoices.find((i) => Number(i.invoiceid) === Number(invoice!.invoiceid));
+      if (inMemInv) inMemInv.status = 'Cancelled';
+
       // Restore product stock
-      for (const item of invoice.details) {
+      for (const item of invoice.details || []) {
         const prod = await this.getProductById(item.productid);
         if (prod) {
           await this.updateProduct(prod.productid, { stock: prod.stock + item.quantity });
@@ -397,12 +410,25 @@ class BilliardDatabase {
       current_invoice_id: null,
     }).eq('tableid', tableid);
 
+    const inMemTable = this.inMemoryTables.find((t) => Number(t.tableid) === Number(tableid));
+    if (inMemTable) {
+      inMemTable.status = TableStatus.EMPTY;
+      inMemTable.current_invoice_id = null;
+    }
+
     return { ...table, status: TableStatus.EMPTY, current_invoice_id: null };
   }
 
   public async addServiceToTable(invoiceid: number, productid: number, quantity: number = 1): Promise<Invoice> {
-    const invoice = await this.getInvoiceById(invoiceid);
-    if (!invoice || invoice.status !== 'Playing') throw new Error('Hóa đơn không hợp lệ hoặc đã thanh toán!');
+    let invoice = await this.getInvoiceById(invoiceid);
+    if (!invoice) {
+      const invoices = await this.getInvoices();
+      invoice = invoices.find((i) => (i.status || '').toUpperCase() === 'PLAYING');
+    }
+
+    if (!invoice || (invoice.status || '').toUpperCase() !== 'PLAYING') {
+      throw new Error('Hóa đơn không hợp lệ hoặc đã thanh toán!');
+    }
 
     const product = await this.getProductById(productid);
     if (!product) throw new Error('Sản phẩm không tồn tại!');
@@ -412,18 +438,20 @@ class BilliardDatabase {
     await this.updateProduct(productid, { stock: product.stock - quantity });
 
     // Record transaction
-    await supabase.from('stock_transactions').insert([{
-      productid: product.productid,
-      productname: product.productname,
-      type: 'EXPORT_SALE',
-      quantity,
-      costprice: product.costprice,
-      createdat: new Date().toISOString(),
-      note: `Bán cho Hóa đơn #${invoiceid}`,
-    }]);
+    try {
+      await supabase.from('stock_transactions').insert([{
+        productid: product.productid,
+        productname: product.productname,
+        type: 'EXPORT_SALE',
+        quantity,
+        costprice: product.costprice,
+        createdat: new Date().toISOString(),
+        note: `Bán cho Hóa đơn #${invoice.invoiceid}`,
+      }]);
+    } catch (e) {}
 
     // Check if detail exists
-    const existingDetail = invoice.details.find((d) => d.productid === productid);
+    const existingDetail = invoice.details.find((d) => Number(d.productid) === Number(productid));
     if (existingDetail) {
       const newQty = existingDetail.quantity + quantity;
       const newTotal = newQty * existingDetail.unitprice;
@@ -431,32 +459,52 @@ class BilliardDatabase {
         quantity: newQty,
         totalprice: newTotal,
       }).eq('detailid', existingDetail.detailid);
+      existingDetail.quantity = newQty;
+      existingDetail.totalprice = newTotal;
     } else {
-      await supabase.from('invoice_details').insert([{
-        invoiceid,
+      const detailPayload = {
+        invoiceid: invoice.invoiceid,
         productid: product.productid,
         productname: product.productname,
         quantity,
         unitprice: product.price,
         totalprice: product.price * quantity,
-      }]);
+      };
+      const { data: newDet } = await supabase.from('invoice_details').insert([detailPayload]).select().single();
+      if (newDet) {
+        invoice.details.push(newDet);
+      } else {
+        invoice.details.push({
+          ...detailPayload,
+          detailid: Date.now(),
+        });
+      }
     }
 
     // Recalculate servicefee
-    const updatedInvoice = await this.getInvoiceById(invoiceid);
+    const updatedInvoice = await this.getInvoiceById(invoice.invoiceid);
     if (updatedInvoice) {
       const newServiceFee = updatedInvoice.details.reduce((sum, item) => sum + item.totalprice, 0);
-      await supabase.from('invoices').update({ servicefee: newServiceFee }).eq('invoiceid', invoiceid);
+      await supabase.from('invoices').update({ servicefee: newServiceFee }).eq('invoiceid', invoice.invoiceid);
       return { ...updatedInvoice, servicefee: newServiceFee };
     }
+    const newServiceFee = invoice.details.reduce((sum, item) => sum + item.totalprice, 0);
+    invoice.servicefee = newServiceFee;
     return invoice;
   }
 
   public async removeServiceFromTable(invoiceid: number, detailid: number, quantity: number = 1): Promise<Invoice> {
-    const invoice = await this.getInvoiceById(invoiceid);
-    if (!invoice || invoice.status !== 'Playing') throw new Error('Hóa đơn không tồn tại!');
+    let invoice = await this.getInvoiceById(invoiceid);
+    if (!invoice) {
+      const invoices = await this.getInvoices();
+      invoice = invoices.find((i) => (i.status || '').toUpperCase() === 'PLAYING');
+    }
 
-    const detail = invoice.details.find((d) => d.detailid === detailid);
+    if (!invoice || (invoice.status || '').toUpperCase() !== 'PLAYING') {
+      throw new Error('Hóa đơn không tồn tại hoặc đã thanh toán!');
+    }
+
+    const detail = invoice.details.find((d) => Number(d.detailid) === Number(detailid));
     if (!detail) throw new Error('Chi tiết dịch vụ không tồn tại!');
 
     const product = await this.getProductById(detail.productid);
@@ -474,10 +522,10 @@ class BilliardDatabase {
       }).eq('detailid', detailid);
     }
 
-    const updatedInvoice = await this.getInvoiceById(invoiceid);
+    const updatedInvoice = await this.getInvoiceById(invoice.invoiceid);
     if (updatedInvoice) {
       const newServiceFee = updatedInvoice.details.reduce((sum, item) => sum + item.totalprice, 0);
-      await supabase.from('invoices').update({ servicefee: newServiceFee }).eq('invoiceid', invoiceid);
+      await supabase.from('invoices').update({ servicefee: newServiceFee }).eq('invoiceid', invoice.invoiceid);
       return { ...updatedInvoice, servicefee: newServiceFee };
     }
     return invoice;
@@ -490,18 +538,25 @@ class BilliardDatabase {
     paymentmethod: 'Cash' | 'Transfer' | 'Card';
     staffid?: number;
   }): Promise<Invoice> {
-    const invoice = await this.getInvoiceById(params.invoiceid);
-    if (!invoice || invoice.status !== 'Playing') throw new Error('Hóa đơn không hợp lệ hoặc đã đóng!');
+    let invoice = await this.getInvoiceById(params.invoiceid);
+    if (!invoice) {
+      const invoices = await this.getInvoices();
+      invoice = invoices.find((i) => Number(i.invoiceid) === Number(params.invoiceid) || (i.status || '').toUpperCase() === 'PLAYING');
+    }
+
+    if (!invoice || (invoice.status || '').toUpperCase() !== 'PLAYING') {
+      throw new Error('Hóa đơn không hợp lệ hoặc đã đóng!');
+    }
 
     const table = await this.getTableById(invoice.tableid);
     if (!table) throw new Error('Bàn không tồn tại!');
 
     const now = new Date();
-    const start = new Date(invoice.starttime);
-    const durationMs = now.getTime() - start.getTime();
+    const start = new Date(invoice.starttime || now.toISOString());
+    const durationMs = Math.max(0, now.getTime() - start.getTime());
     const durationMinutes = Math.max(1, Math.ceil(durationMs / (1000 * 60)));
 
-    const hourlyRate = table.hourlyprice;
+    const hourlyRate = table.hourlyprice || 70000;
     const tableFee = Math.round((durationMinutes / 60) * hourlyRate);
 
     let discount = 0;
@@ -527,7 +582,7 @@ class BilliardDatabase {
       }
     }
 
-    const totalAmount = Math.max(0, tableFee + invoice.servicefee - discount);
+    const totalAmount = Math.max(0, tableFee + (invoice.servicefee || 0) - discount);
 
     await supabase.from('invoices').update({
       endtime: now.toISOString(),
@@ -537,9 +592,17 @@ class BilliardDatabase {
       totalamount: totalAmount,
       status: 'Paid',
       paymentmethod: params.paymentmethod,
-      staffid: params.staffid || invoice.staffid,
+      staffid: params.staffid || invoice.staffid || 1,
       customerid: targetCustomerId || null,
-    }).eq('invoiceid', params.invoiceid);
+    }).eq('invoiceid', invoice.invoiceid);
+
+    const inMemInv = this.inMemoryInvoices.find((i) => Number(i.invoiceid) === Number(invoice!.invoiceid));
+    if (inMemInv) {
+      inMemInv.status = 'Paid';
+      inMemInv.totalamount = totalAmount;
+      inMemInv.tablefee = tableFee;
+      inMemInv.discountamount = discount;
+    }
 
     if (customer) {
       const pointsEarned = Math.floor(totalAmount / 10000);
@@ -563,8 +626,20 @@ class BilliardDatabase {
       current_invoice_id: null,
     }).eq('tableid', invoice.tableid);
 
-    const finalInvoice = await this.getInvoiceById(params.invoiceid);
-    return finalInvoice || invoice;
+    const inMemTable = this.inMemoryTables.find((t) => Number(t.tableid) === Number(invoice!.tableid));
+    if (inMemTable) {
+      inMemTable.status = TableStatus.EMPTY;
+      inMemTable.current_invoice_id = null;
+    }
+
+    const finalInvoice = await this.getInvoiceById(invoice.invoiceid);
+    return finalInvoice || {
+      ...invoice,
+      status: 'Paid',
+      tablefee: tableFee,
+      discountamount: discount,
+      totalamount: totalAmount,
+    };
   }
 
   // 3. PRODUCTS
