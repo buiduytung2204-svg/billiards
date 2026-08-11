@@ -200,7 +200,7 @@ export default function App() {
         activeTab={activeTab}
         onChangeTab={setActiveTab}
         lowStockCount={stats?.lowStockCount}
-        pendingBookingsCount={bookings.filter((b) => b.status === 'Pending').length}
+        pendingBookingsCount={bookings.filter((b) => b.status !== 'Cancelled' && b.status !== 'Completed').length}
         isAdmin={activeStaff?.role === 'Manager'}
       />
 

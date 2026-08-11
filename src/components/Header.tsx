@@ -1,14 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { RefreshCw, UserCheck, Clock } from 'lucide-react';
 import { formatVND } from '../utils/format';
-import { Staff } from '../types';
+import { Staff, DashboardStats } from '../types';
 
 interface HeaderProps {
-  stats?: {
-    totalRevenueToday: number;
-    activeTablesCount: number;
-    emptyTablesCount: number;
-  };
+  stats?: DashboardStats;
   activeStaff?: Staff | null;
   onResetDb: () => void;
   onOpenLoginModal?: () => void;
@@ -70,6 +66,11 @@ export const Header: React.FC<HeaderProps> = ({ stats, activeStaff, onResetDb, o
           <div className="flex items-center space-x-1.5 shrink-0">
             <span className="text-slate-400">Doanh thu:</span>
             <span className="font-bold text-amber-300">{formatVND(stats?.totalRevenueToday ?? 0)}</span>
+            <span className="text-[10px] font-mono text-slate-400 bg-slate-900/80 px-1.5 py-0.5 rounded border border-slate-700/80 flex items-center space-x-1">
+              <span className="text-emerald-400" title="Tiền mặt">💵 {formatVND(stats?.cashRevenueToday ?? 0)}</span>
+              <span className="text-slate-600">|</span>
+              <span className="text-sky-400" title="Chuyển khoản / Thẻ">💳 {formatVND(stats?.transferRevenueToday ?? 0)}</span>
+            </span>
           </div>
         </div>
 

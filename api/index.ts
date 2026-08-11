@@ -323,6 +323,36 @@ class BilliardDatabase {
       }
     }
 
+    // 5. Query active bookings to mark BOOKED tables
+    let activeBookings: Booking[] = [];
+    try {
+      const { data: dbBookings } = await supabase.from('bookings').select('*');
+      if (dbBookings) {
+        activeBookings = dbBookings.filter((b: any) => {
+          const st = String(b.status || '').toUpperCase();
+          return st === 'CONFIRMED' || st === 'PENDING' || st === 'BOOKED';
+        }) as Booking[];
+      }
+    } catch (e) {}
+
+    for (const b of this.inMemoryBookings) {
+      if (b) {
+        const st = String(b.status || '').toUpperCase();
+        if (st === 'CONFIRMED' || st === 'PENDING' || st === 'BOOKED') {
+          if (!activeBookings.some((ab) => Number(ab.bookingid) === Number(b.bookingid))) {
+            activeBookings.push(b);
+          }
+        }
+      }
+    }
+
+    const bookedTableIds = new Set<number>();
+    for (const b of activeBookings) {
+      if (b && b.tableid) {
+        bookedTableIds.add(Number(b.tableid));
+      }
+    }
+
     // Assign status and active invoice ID
     for (const [tid, table] of tableMap.entries()) {
       const activeInv = activeTableIdToInvMap.get(tid);
@@ -331,6 +361,13 @@ class BilliardDatabase {
         table.current_invoice_id = activeInv.invoiceid;
       } else if (String(table.status || '').toUpperCase() === 'PLAYING') {
         table.status = TableStatus.PLAYING;
+      } else if (
+        bookedTableIds.has(tid) ||
+        String(table.status || '').toUpperCase() === 'BOOKED' ||
+        String(table.status || '').toUpperCase() === 'RESERVED'
+      ) {
+        table.status = TableStatus.BOOKED;
+        table.current_invoice_id = null;
       } else {
         table.status = TableStatus.EMPTY;
         table.current_invoice_id = null;
@@ -746,6 +783,16 @@ class BilliardDatabase {
 
     table.status = TableStatus.PLAYING;
     table.current_invoice_id = finalInvoiceId;
+
+    // Mark active bookings for this table as Completed
+    try {
+      await supabase.from('bookings').update({ status: 'Completed' }).eq('tableid', tableid).neq('status', 'Cancelled').neq('status', 'Completed');
+    } catch (e) {}
+    for (const b of this.inMemoryBookings) {
+      if (b && Number(b.tableid) === Number(tableid) && b.status !== 'Cancelled' && b.status !== 'Completed') {
+        b.status = 'Completed';
+      }
+    }
 
     return createdInv;
   }
@@ -1269,38 +1316,155 @@ class BilliardDatabase {
 
   // 5. BOOKINGS
   public async getBookings(): Promise<Booking[]> {
-    const { data, error } = await supabase.from('bookings').select('*').order('bookingid', { ascending: false });
-    if (error || !data) return this.inMemoryBookings;
-    return data as Booking[];
+    let list: Booking[] = [];
+    let dbData: any[] = [];
+    try {
+      const { data, error } = await supabase.from('bookings').select('*').order('bookingid', { ascending: false });
+      if (!error && data) {
+        dbData = data;
+      }
+    } catch (e) {}
+
+    const bookingMap = new Map<number, Booking>();
+    for (const b of this.inMemoryBookings) {
+      if (b && b.bookingid) {
+        bookingMap.set(Number(b.bookingid), b);
+      }
+    }
+    for (const b of dbData) {
+      if (b && b.bookingid) {
+        const existing = bookingMap.get(Number(b.bookingid));
+        bookingMap.set(Number(b.bookingid), { ...existing, ...b });
+      }
+    }
+
+    list = Array.from(bookingMap.values()).sort((a, b) => Number(b.bookingid) - Number(a.bookingid));
+
+    const customers = await this.getCustomers();
+    const tables = await this.getTables();
+
+    return list.map((b) => {
+      const cust = b.customerid ? customers.find((c) => Number(c.customerid) === Number(b.customerid)) : null;
+      const tbl = b.tableid ? tables.find((t) => Number(t.tableid) === Number(b.tableid)) : null;
+
+      return {
+        ...b,
+        customername: cust ? cust.fullname : (b.customername || 'Khách vãng lai'),
+        customerphone: cust ? cust.phone : (b.customerphone || ''),
+        tablename: tbl ? tbl.tablename : (b.tableid ? `Bàn ${b.tableid}` : 'Bàn bất kỳ'),
+      };
+    });
   }
 
-  public async addBooking(bData: Omit<Booking, 'bookingid' | 'status'>): Promise<Booking> {
-    const row = {
-      ...bData,
-      status: 'Confirmed',
-    };
-    const { data, error } = await supabase.from('bookings').insert([row]).select().single();
-    if (error || !data) {
-      const fallbackB: Booking = {
-        ...row,
-        bookingid: this.inMemoryBookings.length > 0 ? Math.max(...this.inMemoryBookings.map((b) => b.bookingid)) + 1 : 1,
-        status: 'Confirmed',
-      };
-      this.inMemoryBookings.push(fallbackB);
-      return fallbackB;
+  public async addBooking(
+    bData: Omit<Booking, 'bookingid' | 'status'> & { customername?: string; customerphone?: string }
+  ): Promise<Booking> {
+    let cName = bData.customername || 'Khách vãng lai';
+    let cPhone = bData.customerphone || '';
+
+    if (bData.customerid) {
+      const cust = await this.getCustomerById(Number(bData.customerid));
+      if (cust) {
+        cName = cust.fullname;
+        cPhone = cust.phone;
+      }
     }
-    return data as Booking;
+
+    const nextBookingId = this.inMemoryBookings.length > 0
+      ? Math.max(...this.inMemoryBookings.map((b) => Number(b.bookingid) || 0)) + 1
+      : 101;
+
+    const row: any = {
+      customerid: bData.customerid ? Number(bData.customerid) : null,
+      tableid: bData.tableid ? Number(bData.tableid) : null,
+      expectedstarttime: bData.expectedstarttime || new Date().toISOString(),
+      expectedendtime: bData.expectedendtime || null,
+      note: bData.note || '',
+      status: 'Confirmed',
+      customername: cName,
+      customerphone: cPhone,
+      createdat: new Date().toISOString(),
+    };
+
+    let createdBooking: Booking | null = null;
+
+    try {
+      const { data, error } = await supabase.from('bookings').insert([row]).select().single();
+      if (!error && data) {
+        createdBooking = data as Booking;
+      } else {
+        const { customername, customerphone, ...cleanRow } = row;
+        const { data: data2, error: error2 } = await supabase.from('bookings').insert([cleanRow]).select().single();
+        if (!error2 && data2) {
+          createdBooking = { ...data2, customername: cName, customerphone: cPhone } as Booking;
+        }
+      }
+    } catch (e) {}
+
+    if (!createdBooking) {
+      createdBooking = {
+        bookingid: nextBookingId,
+        ...row,
+        customername: cName,
+        customerphone: cPhone,
+      };
+    }
+
+    this.inMemoryBookings = [
+      createdBooking,
+      ...this.inMemoryBookings.filter((b) => Number(b.bookingid) !== Number(createdBooking!.bookingid)),
+    ];
+
+    if (bData.tableid) {
+      try {
+        await supabase.from('tables').update({ status: TableStatus.BOOKED }).eq('tableid', bData.tableid);
+      } catch (e) {}
+      const tbl = this.inMemoryTables.find((t) => Number(t.tableid) === Number(bData.tableid));
+      if (tbl && tbl.status !== TableStatus.PLAYING) {
+        tbl.status = TableStatus.BOOKED;
+      }
+    }
+
+    this.persistState();
+    return createdBooking;
   }
 
   public async cancelBooking(bookingid: number): Promise<Booking> {
-    const { data, error } = await supabase.from('bookings').update({ status: 'Cancelled' }).eq('bookingid', bookingid).select().single();
-    if (error || !data) {
-      const booking = this.inMemoryBookings.find((b) => b.bookingid === bookingid);
-      if (!booking) throw new Error('Lịch đặt không tồn tại!');
-      booking.status = 'Cancelled';
-      return booking;
+    let booking: Booking | null = null;
+    try {
+      const { data, error } = await supabase.from('bookings').update({ status: 'Cancelled' }).eq('bookingid', bookingid).select().single();
+      if (!error && data) {
+        booking = data as Booking;
+      }
+    } catch (e) {}
+
+    const b = this.inMemoryBookings.find((item) => Number(item.bookingid) === Number(bookingid));
+    if (b) {
+      b.status = 'Cancelled';
+      if (!booking) booking = b;
+    } else if (booking) {
+      this.inMemoryBookings.push(booking);
+    } else {
+      throw new Error('Lịch đặt không tồn tại!');
     }
-    return data as Booking;
+
+    if (booking && booking.tableid) {
+      const activeBookings = this.inMemoryBookings.filter(
+        (item) => Number(item.tableid) === Number(booking!.tableid) && item.status !== 'Cancelled' && item.status !== 'Completed'
+      );
+      if (activeBookings.length === 0) {
+        try {
+          await supabase.from('tables').update({ status: TableStatus.EMPTY }).eq('tableid', booking.tableid);
+        } catch (e) {}
+        const tbl = this.inMemoryTables.find((t) => Number(t.tableid) === Number(booking!.tableid));
+        if (tbl && tbl.status !== TableStatus.PLAYING) {
+          tbl.status = TableStatus.EMPTY;
+        }
+      }
+    }
+
+    this.persistState();
+    return booking;
   }
 
   // 6. STAFFS & AUTH
@@ -1432,11 +1596,27 @@ class BilliardDatabase {
     const tableRevenueToday = todayInvoices.reduce((sum, i) => sum + i.tablefee, 0);
     const serviceRevenueToday = todayInvoices.reduce((sum, i) => sum + i.servicefee, 0);
 
+    const cashRevenueToday = todayInvoices
+      .filter((i) => {
+        const m = String(i.paymentmethod || 'Cash').toLowerCase();
+        return m === 'cash' || m.includes('tiền mặt') || m.includes('tien mat');
+      })
+      .reduce((sum, i) => sum + i.totalamount, 0);
+
+    const transferRevenueToday = todayInvoices
+      .filter((i) => {
+        const m = String(i.paymentmethod || 'Cash').toLowerCase();
+        return m !== 'cash' && !m.includes('tiền mặt') && !m.includes('tien mat');
+      })
+      .reduce((sum, i) => sum + i.totalamount, 0);
+
     const playingTablesCount = tables.filter((t) => t.status === TableStatus.PLAYING).length;
     const emptyTablesCount = tables.filter((t) => t.status === TableStatus.EMPTY).length;
 
     return {
       totalRevenueToday,
+      cashRevenueToday,
+      transferRevenueToday,
       tableRevenueToday,
       serviceRevenueToday,
       playingTablesCount,

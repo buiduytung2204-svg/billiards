@@ -12,6 +12,12 @@ interface BookingManagementProps {
   onOpenTableFromBooking: (tableid: number, customerid?: number) => void;
 }
 
+const getLocalDateTimeString = (hoursInFuture: number = 2) => {
+  const d = new Date(Date.now() + 3600000 * hoursInFuture);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
 export const BookingManagement: React.FC<BookingManagementProps> = ({
   bookings,
   tables,
@@ -21,23 +27,53 @@ export const BookingManagement: React.FC<BookingManagementProps> = ({
 }) => {
   const [showAddModal, setShowAddModal] = useState<boolean>(false);
   const [cancellingBookingId, setCancellingBookingId] = useState<number | null>(null);
+  const [customerType, setCustomerType] = useState<'MEMBER' | 'GUEST'>('MEMBER');
   const [selectedCustomerId, setSelectedCustomerId] = useState<number>(customers[0]?.customerid || 1);
+  const [guestName, setGuestName] = useState<string>('');
+  const [guestPhone, setGuestPhone] = useState<string>('');
   const [selectedTableId, setSelectedTableId] = useState<number>(tables[0]?.tableid || 1);
-  const [expectedTime, setExpectedTime] = useState<string>(
-    new Date(Date.now() + 3600000 * 2).toISOString().slice(0, 16)
-  );
+  const [expectedTime, setExpectedTime] = useState<string>(getLocalDateTimeString(2));
   const [note, setNote] = useState<string>('');
+
+  const openAddModal = () => {
+    if (tables.length > 0) setSelectedTableId(tables[0].tableid);
+    if (customers.length > 0) setSelectedCustomerId(customers[0].customerid);
+    setExpectedTime(getLocalDateTimeString(2));
+    setShowAddModal(true);
+  };
 
   const handleCreateBooking = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
+      if (customerType === 'GUEST' && !guestName.trim()) {
+        alert('Vui lòng nhập tên khách ngoài!');
+        return;
+      }
+
+      let parsedDateIso = new Date().toISOString();
+      if (expectedTime) {
+        const d = new Date(expectedTime);
+        if (!isNaN(d.getTime())) {
+          parsedDateIso = d.toISOString();
+        }
+      }
+
+      const tableToBook = selectedTableId || (tables.length > 0 ? tables[0].tableid : 1);
+      const custToBook = customerType === 'MEMBER' ? (selectedCustomerId || (customers.length > 0 ? customers[0].customerid : 1)) : undefined;
+
       await api.addBooking({
-        customerid: selectedCustomerId,
-        tableid: selectedTableId,
-        expectedstarttime: new Date(expectedTime).toISOString(),
+        customerid: custToBook,
+        customername: customerType === 'GUEST' ? guestName.trim() : undefined,
+        customerphone: customerType === 'GUEST' ? guestPhone.trim() : undefined,
+        tableid: tableToBook,
+        expectedstarttime: parsedDateIso,
         note: note,
       });
+
       setShowAddModal(false);
+      setGuestName('');
+      setGuestPhone('');
+      setNote('');
       onRefresh();
       alert('Tạo lịch đặt bàn thành công!');
     } catch (err: any) {
@@ -70,7 +106,7 @@ export const BookingManagement: React.FC<BookingManagementProps> = ({
         </div>
 
         <button
-          onClick={() => setShowAddModal(true)}
+          onClick={openAddModal}
           className="bg-purple-600 hover:bg-purple-500 text-white font-extrabold px-4 py-2 rounded-xl text-xs flex items-center space-x-1.5 shadow-md shadow-purple-500/20"
         >
           <Plus className="w-4 h-4" />
@@ -97,8 +133,20 @@ export const BookingManagement: React.FC<BookingManagementProps> = ({
               {bookings.map((b) => (
                 <tr key={b.bookingid} className="hover:bg-slate-800/40 transition">
                   <td className="p-3.5 font-mono text-slate-500">#{b.bookingid}</td>
-                  <td className="p-3.5 font-bold text-white">
-                    {b.customername} ({b.customerphone})
+                  <td className="p-3.5">
+                    <div className="font-bold text-white flex items-center space-x-1.5">
+                      <span>{b.customername || 'Khách vãng lai'}</span>
+                      {b.customerid ? (
+                        <span className="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 text-[10px] border border-blue-500/30 font-normal">
+                          Thành viên
+                        </span>
+                      ) : (
+                        <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] border border-amber-500/30 font-normal">
+                          Khách ngoài
+                        </span>
+                      )}
+                    </div>
+                    {b.customerphone && <div className="text-[11px] text-slate-400 font-mono">{b.customerphone}</div>}
                   </td>
                   <td className="p-3.5 text-purple-300 font-semibold">{b.tablename || 'Bàn bất kỳ'}</td>
                   <td className="p-3.5 font-mono text-amber-300">{formatDateTime(b.expectedstarttime)}</td>
@@ -160,18 +208,69 @@ export const BookingManagement: React.FC<BookingManagementProps> = ({
             <h3 className="font-bold text-base text-white border-b border-slate-800 pb-2">Đặt giữ bàn bida</h3>
             <form onSubmit={handleCreateBooking} className="space-y-3 text-xs">
               <div>
-                <label className="block text-slate-300 mb-1">Khách hàng:</label>
-                <select
-                  value={selectedCustomerId}
-                  onChange={(e) => setSelectedCustomerId(Number(e.target.value))}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl p-2.5 text-white"
-                >
-                  {customers.map((c) => (
-                    <option key={c.customerid} value={c.customerid}>
-                      {c.fullname} ({c.phone})
-                    </option>
-                  ))}
-                </select>
+                <label className="block text-slate-300 mb-1 font-semibold">Khách hàng:</label>
+                <div className="grid grid-cols-2 gap-2 mb-2">
+                  <button
+                    type="button"
+                    onClick={() => setCustomerType('MEMBER')}
+                    className={`p-2 rounded-xl text-xs font-bold border transition ${
+                      customerType === 'MEMBER'
+                        ? 'bg-purple-600 text-white border-purple-500 shadow-md'
+                        : 'bg-slate-950 text-slate-400 border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    Thành viên (Có thẻ)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCustomerType('GUEST')}
+                    className={`p-2 rounded-xl text-xs font-bold border transition ${
+                      customerType === 'GUEST'
+                        ? 'bg-amber-600 text-white border-amber-500 shadow-md'
+                        : 'bg-slate-950 text-slate-400 border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    Khách ngoài / Vãng lai
+                  </button>
+                </div>
+
+                {customerType === 'MEMBER' ? (
+                  <select
+                    value={selectedCustomerId}
+                    onChange={(e) => setSelectedCustomerId(Number(e.target.value))}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl p-2.5 text-white"
+                  >
+                    {customers.map((c) => (
+                      <option key={c.customerid} value={c.customerid}>
+                        {c.fullname} ({c.phone})
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="space-y-2 bg-slate-950/60 p-3 rounded-2xl border border-slate-800">
+                    <div>
+                      <label className="block text-slate-400 text-[11px] mb-1">Họ & tên khách ngoài (*):</label>
+                      <input
+                        type="text"
+                        required
+                        value={guestName}
+                        onChange={(e) => setGuestName(e.target.value)}
+                        placeholder="Ví dụ: Anh Nam (Khách ngoài)"
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 text-[11px] mb-1">Số điện thoại liên hệ:</label>
+                      <input
+                        type="tel"
+                        value={guestPhone}
+                        onChange={(e) => setGuestPhone(e.target.value)}
+                        placeholder="Ví dụ: 0912345678"
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-white font-mono"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div>

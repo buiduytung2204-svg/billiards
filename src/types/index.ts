@@ -140,6 +140,8 @@ export interface StockTransaction {
 
 export interface DashboardStats {
   totalRevenueToday: number;
+  cashRevenueToday?: number;
+  transferRevenueToday?: number;
   activeTablesCount: number;
   emptyTablesCount: number;
   totalInvoicesToday: number;
