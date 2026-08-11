@@ -70,7 +70,8 @@ export interface InvoiceDetail {
   quantity: number;
   unitprice: number;
   costprice?: number;
-  subtotal: number;
+  totalprice?: number;
+  subtotal?: number;
   // Join field
   productname?: string;
   unit?: string;

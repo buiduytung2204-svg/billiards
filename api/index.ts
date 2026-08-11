@@ -924,6 +924,7 @@ class BilliardDatabase {
         quantity,
         unitprice: product.price,
         totalprice: product.price * quantity,
+        subtotal: product.price * quantity,
       };
       let insertedId = Date.now();
       try {

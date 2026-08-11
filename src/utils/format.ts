@@ -1,5 +1,6 @@
-export function formatVND(amount: number): string {
-  return new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(amount);
+export function formatVND(amount?: number | null): string {
+  const val = typeof amount === 'number' && !isNaN(amount) ? amount : 0;
+  return new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(val);
 }
 
 export function formatDateTime(isoString?: string | null): string {

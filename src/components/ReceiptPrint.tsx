@@ -42,7 +42,6 @@ export const ReceiptPrint: React.FC<ReceiptPrintProps> = ({ invoice, onClose }) 
         <div id="printable-receipt" className="w-full bg-white text-slate-950 p-6 rounded-xl font-mono text-xs shadow-inner space-y-3">
           <div className="text-center space-y-0.5 border-b border-slate-300 pb-3">
             <h2 className="font-extrabold text-base tracking-tight">🎱 BILLIARD ARENA</h2>
-            <p className="text-[10px] text-slate-600">Đ/c: 123 Đường Bida, Q.1, TP. Hồ Chí Minh</p>
             <p className="text-[10px] text-slate-600">Hotline: 0909 888 999</p>
             <p className="font-bold text-sm pt-1 uppercase">HÓA ĐƠN THANH TOÁN</p>
             <p className="text-[10px] text-slate-500">Mã HĐ: #{invoice.invoiceid}</p>
@@ -65,7 +64,7 @@ export const ReceiptPrint: React.FC<ReceiptPrintProps> = ({ invoice, onClose }) 
             </div>
             <div className="flex justify-between">
               <span>Kết thúc:</span>
-              <span>{formatDateTime(invoice.endtime)}</span>
+              <span>{formatDateTime(invoice.endtime || new Date().toISOString())}</span>
             </div>
             <div className="flex justify-between">
               <span>Thu ngân:</span>
@@ -81,28 +80,31 @@ export const ReceiptPrint: React.FC<ReceiptPrintProps> = ({ invoice, onClose }) 
             </div>
             <div className="flex justify-between text-slate-900">
               <span>Tiền giờ chơi</span>
-              <span className="font-bold">{formatVND(invoice.tablefee)}</span>
+              <span className="font-bold">{formatVND(invoice.tablefee || 0)}</span>
             </div>
 
-            {invoice.details && invoice.details.map((d) => (
-              <div key={d.detailid} className="flex justify-between text-slate-800">
-                <span>
-                  {d.productname} (x{d.quantity})
-                </span>
-                <span>{formatVND(d.subtotal)}</span>
-              </div>
-            ))}
+            {invoice.details && invoice.details.map((d, idx) => {
+              const itemTotal = d.totalprice ?? d.subtotal ?? (d.unitprice ? d.unitprice * d.quantity : 0);
+              return (
+                <div key={d.detailid || idx} className="flex justify-between text-slate-800">
+                  <span>
+                    {d.productname} (x{d.quantity})
+                  </span>
+                  <span className="font-semibold">{formatVND(itemTotal)}</span>
+                </div>
+              );
+            })}
           </div>
 
           {/* Summary Totals */}
           <div className="space-y-1 text-[11px] pt-1">
             <div className="flex justify-between text-slate-700">
               <span>Tổng tiền hàng & giờ:</span>
-              <span>{formatVND(invoice.tablefee + invoice.servicefee)}</span>
+              <span>{formatVND((invoice.tablefee || 0) + (invoice.servicefee || 0))}</span>
             </div>
             {invoice.vipdiscountamount && invoice.vipdiscountamount > 0 ? (
               <div className="flex justify-between text-amber-700 font-semibold">
-                <span>Ưu đãi VIP ({invoice.customertier}):</span>
+                <span>Ưu đãi VIP ({invoice.customertier || 'Thành viên'}):</span>
                 <span>-{formatVND(invoice.vipdiscountamount)}</span>
               </div>
             ) : null}
@@ -120,7 +122,7 @@ export const ReceiptPrint: React.FC<ReceiptPrintProps> = ({ invoice, onClose }) 
             ) : null}
             <div className="flex justify-between font-extrabold text-sm text-slate-950 pt-1 border-t border-slate-300">
               <span>TỔNG CỘNG:</span>
-              <span className="text-base">{formatVND(invoice.totalamount)}</span>
+              <span className="text-base">{formatVND(invoice.totalamount || 0)}</span>
             </div>
             <div className="flex justify-between text-[10px] text-slate-600 pt-1">
               <span>P.Thức T.Toán:</span>
@@ -135,16 +137,16 @@ export const ReceiptPrint: React.FC<ReceiptPrintProps> = ({ invoice, onClose }) 
             </p>
             <div className="flex flex-col items-center justify-center p-2 bg-slate-50 rounded-xl border border-slate-200 w-48 mx-auto shadow-sm">
               <img
-                src={`https://img.vietqr.io/image/MB-0909888999-compact2.png?amount=${invoice.totalamount}&addInfo=THANH%20TOAN%20HD${invoice.invoiceid}&accountName=BILLIARD%20ARENA`}
+                src={`https://img.vietqr.io/image/MB-000022042006-compact.png?amount=${invoice.totalamount || 0}&addInfo=THANH%20TOAN%20HD${invoice.invoiceid}&accountName=BILLIARD%20ARENA`}
                 alt="Mã VietQR Thanh Toán"
                 className="w-40 h-40 object-contain rounded-md"
                 loading="eager"
               />
               <div className="text-[9px] text-slate-700 font-sans space-y-0.5 pt-1 w-full text-center">
-                <p className="font-bold text-slate-900">MB Bank: <span className="font-mono text-purple-700">0909 888 999</span></p>
+                <p className="font-bold text-slate-900">MB Bank: <span className="font-mono text-purple-700">0000 2204 2006</span></p>
                 <p className="text-[8px] text-slate-600 uppercase font-semibold">BILLIARD ARENA</p>
                 <p className="font-bold text-emerald-700 text-[10px] font-mono">
-                  {formatVND(invoice.totalamount)}
+                  {formatVND(invoice.totalamount || 0)}
                 </p>
               </div>
             </div>
