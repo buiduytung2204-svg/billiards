@@ -81,7 +81,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({ table, customers, 
   if (!activeInvoice) return null;
 
   const duration = calculateDuration(activeInvoice.starttime);
-  const tableFee = Math.round((table.hourlyprice / 60) * duration.totalMinutes);
+  const tableFee = Math.ceil((table.hourlyprice / 60) * duration.totalMinutes);
   const serviceFee = activeInvoice.servicefee || 0;
   const subTotal = tableFee + serviceFee;
 

@@ -32,14 +32,13 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   });
 
   const contentType = res.headers.get('content-type');
-  if (!res.ok || !contentType || !contentType.includes('application/json')) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`Lỗi kết nối server (${res.status}): ${text.substring(0, 80) || 'Không nhận được dữ liệu JSON'}`);
+  if (!contentType || !contentType.includes('application/json')) {
+    throw new Error(`Hệ thống đang khởi động hoặc đường dẫn API chưa phản hồi JSON (${res.status}). Vui lòng thử lại!`);
   }
 
   const json = await res.json();
-  if (!json.success) {
-    throw new Error(json.error || 'Có lỗi xảy ra khi kết nối server API');
+  if (!res.ok || !json.success) {
+    throw new Error(json.error || `Có lỗi xảy ra khi kết nối server API (${res.status})`);
   }
   return json.data;
 }

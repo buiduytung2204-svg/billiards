@@ -1,7 +1,8 @@
 export enum TableStatus {
-  EMPTY = 0,     // Trống (Màu xanh)
-  PLAYING = 1,   // Đang chơi (Màu đỏ / vàng)
-  BOOKED = 2     // Đã đặt trước (Màu tím / cam)
+  EMPTY = 'EMPTY',
+  PLAYING = 'PLAYING',
+  BOOKED = 'BOOKED',
+  RESERVED = 'RESERVED'
 }
 
 export enum InvoiceStatus {

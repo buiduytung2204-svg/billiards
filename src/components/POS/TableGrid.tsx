@@ -20,16 +20,30 @@ export const TableGrid: React.FC<TableGridProps> = ({ tables, onOpenTable, onAdd
   const zones = Array.from(new Set(tables.map((t) => t.zone || 'Khu Chung'))).filter(Boolean);
   const types = Array.from(new Set(tables.map((t) => t.tabletype)));
 
-  const emptyCount = tables.filter((t) => t.status === TableStatus.EMPTY).length;
-  const playingCount = tables.filter((t) => t.status === TableStatus.PLAYING).length;
-  const bookedCount = tables.filter((t) => t.status === TableStatus.BOOKED).length;
+  const isPlaying = (t: BilliardTable & { activeInvoice?: Invoice | null }) => {
+    const s = String(t.status ?? '').toUpperCase();
+    return s === 'PLAYING' || s === '1' || !!t.activeInvoice;
+  };
+
+  const isBooked = (t: BilliardTable & { activeInvoice?: Invoice | null }) => {
+    const s = String(t.status ?? '').toUpperCase();
+    return s === 'BOOKED' || s === 'RESERVED' || s === '2';
+  };
+
+  const isEmpty = (t: BilliardTable & { activeInvoice?: Invoice | null }) => {
+    return !isPlaying(t) && !isBooked(t);
+  };
+
+  const emptyCount = tables.filter(isEmpty).length;
+  const playingCount = tables.filter(isPlaying).length;
+  const bookedCount = tables.filter(isBooked).length;
 
   const filteredTables = tables.filter((t) => {
     if (selectedZone !== 'ALL' && t.zone !== selectedZone) return false;
     if (selectedType !== 'ALL' && t.tabletype !== selectedType) return false;
-    if (statusFilter === 'EMPTY' && t.status !== TableStatus.EMPTY) return false;
-    if (statusFilter === 'PLAYING' && t.status !== TableStatus.PLAYING) return false;
-    if (statusFilter === 'BOOKED' && t.status !== TableStatus.BOOKED) return false;
+    if (statusFilter === 'EMPTY' && !isEmpty(t)) return false;
+    if (statusFilter === 'PLAYING' && !isPlaying(t)) return false;
+    if (statusFilter === 'BOOKED' && !isBooked(t)) return false;
     if (searchTerm && !t.tablename.toLowerCase().includes(searchTerm.toLowerCase())) return false;
     return true;
   });

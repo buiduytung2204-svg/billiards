@@ -25,29 +25,28 @@ export function formatTimeOnly(isoString?: string | null): string {
 }
 
 export function calculateDuration(startTimeIso?: string | null, endTimeIso?: string | null) {
-  if (!startTimeIso) return { hours: 0, minutes: 0, seconds: 0, totalMinutes: 0, formatted: '00:00:00' };
+  if (!startTimeIso) return { hours: 0, minutes: 0, seconds: 0, totalMinutes: 0, formatted: '00:00' };
 
   const start = new Date(startTimeIso).getTime();
   const end = endTimeIso ? new Date(endTimeIso).getTime() : Date.now();
   const diffMs = Math.max(0, end - start);
 
   const totalSeconds = Math.floor(diffMs / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
   const totalMinutes = Math.floor(totalSeconds / 60);
 
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  const seconds = totalSeconds % 60;
+
   const pad = (n: number) => n.toString().padStart(2, '0');
-  const formatted = `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+  const formatted = `${pad(hours)}:${pad(minutes)}`;
 
   return { hours, minutes, seconds, totalMinutes, formatted };
 }
 
 export function calculateRealtimeTableFee(startTimeIso: string | null | undefined, hourlyPrice: number) {
   if (!startTimeIso) return 0;
-  const start = new Date(startTimeIso).getTime();
-  const diffMs = Math.max(0, Date.now() - start);
-  const totalSeconds = Math.floor(diffMs / 1000);
-  if (totalSeconds < 60) return 0;
-  return Math.round((hourlyPrice / 3600) * totalSeconds);
+  const dur = calculateDuration(startTimeIso);
+  if (dur.totalMinutes <= 0) return 0;
+  return Math.ceil((hourlyPrice / 60) * dur.totalMinutes);
 }

@@ -308,6 +308,19 @@ class BilliardDatabase {
       }
     } catch (e) {}
 
+    // Exclude invoices that are Paid or Cancelled in inMemoryInvoices
+    const inactiveInvoiceIds = new Set<number>();
+    for (const inv of this.inMemoryInvoices) {
+      if (inv && inv.invoiceid) {
+        const st = String(inv.status || '').toUpperCase();
+        if (st === 'PAID' || st === 'CANCELLED') {
+          inactiveInvoiceIds.add(Number(inv.invoiceid));
+        }
+      }
+    }
+
+    activeInvoices = activeInvoices.filter((inv) => inv && inv.invoiceid && !inactiveInvoiceIds.has(Number(inv.invoiceid)));
+
     for (const inv of this.inMemoryInvoices) {
       if (inv && String(inv.status || '').toUpperCase() === 'PLAYING') {
         if (!activeInvoices.some((a) => Number(a.invoiceid) === Number(inv.invoiceid))) {
@@ -356,11 +369,13 @@ class BilliardDatabase {
     // Assign status and active invoice ID
     for (const [tid, table] of tableMap.entries()) {
       const activeInv = activeTableIdToInvMap.get(tid);
+      const memTable = this.inMemoryTables.find((t) => Number(t.tableid) === tid);
       if (activeInv) {
         table.status = TableStatus.PLAYING;
         table.current_invoice_id = activeInv.invoiceid;
-      } else if (String(table.status || '').toUpperCase() === 'PLAYING') {
-        table.status = TableStatus.PLAYING;
+      } else if (memTable && memTable.status === TableStatus.EMPTY) {
+        table.status = TableStatus.EMPTY;
+        table.current_invoice_id = null;
       } else if (
         bookedTableIds.has(tid) ||
         String(table.status || '').toUpperCase() === 'BOOKED' ||
@@ -573,40 +588,40 @@ class BilliardDatabase {
 
   public async findOrCreateActiveInvoice(invoiceid: number, tableid?: number): Promise<Invoice> {
     await ensureBaseDbSeeded();
+
+    // 1. Check by invoiceid directly
     if (invoiceid) {
-      let invoice = await this.getInvoiceById(invoiceid);
-      if (invoice && (invoice.status || '').toUpperCase() === 'PLAYING') {
-        return invoice;
+      const invoice = await this.getInvoiceById(invoiceid);
+      if (invoice) {
+        if ((invoice.status || '').toUpperCase() === 'PLAYING') {
+          return invoice;
+        }
+        // If invoice is already Paid or Cancelled, return it as is! Do NOT open a new table!
+        if ((invoice.status || '').toUpperCase() === 'PAID' || (invoice.status || '').toUpperCase() === 'CANCELLED') {
+          return invoice;
+        }
       }
     }
 
+    // 2. Check by tableid if an active playing invoice exists
+    const targetTableId = tableid || (invoiceid > 1000 && invoiceid <= 1200 ? invoiceid - 1000 : undefined);
     const allInvoices = await this.getInvoices();
 
     if (invoiceid) {
-      const matchById = allInvoices.find((i) => Number(i.invoiceid) === Number(invoiceid) && (i.status || '').toUpperCase() === 'PLAYING');
+      const matchById = allInvoices.find((i) => Number(i.invoiceid) === Number(invoiceid));
       if (matchById) return matchById;
     }
-
-    const targetTableId = tableid || (invoiceid > 1000 && invoiceid <= 1200 ? invoiceid - 1000 : undefined);
 
     if (targetTableId) {
       const matchByTable = allInvoices.find((i) => Number(i.tableid) === Number(targetTableId) && (i.status || '').toUpperCase() === 'PLAYING');
       if (matchByTable) return matchByTable;
     }
 
-    const allTables = await this.getTables();
-    let targetTable = targetTableId ? allTables.find((t) => Number(t.tableid) === Number(targetTableId)) : undefined;
-    if (!targetTable) {
-      targetTable = allTables.find((t) => Number(t.current_invoice_id) === Number(invoiceid) || (1000 + Number(t.tableid)) === Number(invoiceid) || t.status === TableStatus.PLAYING);
-    }
+    // If an invoice exists in memory for this invoiceid, return it
+    const memMatch = this.inMemoryInvoices.find((i) => Number(i.invoiceid) === Number(invoiceid));
+    if (memMatch) return memMatch;
 
-    if (!targetTable) {
-      targetTable = allTables.find((t) => t.status === TableStatus.PLAYING) || allTables[0];
-    }
-
-    const matchedTableId = targetTable ? targetTable.tableid : (targetTableId || 1);
-
-    return this.getOrCreateStableActiveInvoiceForTable(matchedTableId);
+    throw new Error('Hóa đơn không tồn tại hoặc bàn đã được thanh toán!');
   }
 
   public async openTable(tableid: number, customerid?: number, staffid: number = 1): Promise<Invoice> {
@@ -1036,9 +1051,10 @@ class BilliardDatabase {
     const now = new Date();
     const start = new Date(invoice.starttime || now.toISOString());
     const durationMs = Math.max(0, now.getTime() - start.getTime());
-    const durationMinutes = Math.max(1, Math.ceil(durationMs / (1000 * 60)));
+    const totalSeconds = Math.floor(durationMs / 1000);
+    const durationMinutes = Math.floor(totalSeconds / 60);
 
-    const tableFee = Math.round((durationMinutes / 60) * hourlyRate);
+    const tableFee = Math.ceil((durationMinutes / 60) * hourlyRate);
 
     let discount = 0;
     const targetCustomerId = params.customerid || invoice.customerid;
@@ -1610,8 +1626,11 @@ class BilliardDatabase {
       })
       .reduce((sum, i) => sum + i.totalamount, 0);
 
-    const playingTablesCount = tables.filter((t) => t.status === TableStatus.PLAYING).length;
-    const emptyTablesCount = tables.filter((t) => t.status === TableStatus.EMPTY).length;
+    const playingTablesCount = tables.filter((t) => (String(t.status || '').toUpperCase() === 'PLAYING') || !!(t as any).activeInvoice).length;
+    const emptyTablesCount = tables.filter((t) => {
+      const st = String(t.status || '').toUpperCase();
+      return (st === 'EMPTY' || st === '0') && !(t as any).activeInvoice;
+    }).length;
 
     return {
       totalRevenueToday,
@@ -1695,20 +1714,17 @@ apiRouter.get('/tables', async (req, res) => {
           );
         }
 
+        const isPlaying = !!activeInvoice && (activeInvoice.status || '').toUpperCase() === 'PLAYING';
         const rawStatus = (t.status || '').toUpperCase();
-        let isPlaying = rawStatus === 'PLAYING' || rawStatus === 'BUSY' || !!activeInvoice;
-
-        if (isPlaying && !activeInvoice) {
-          activeInvoice = await db.getOrCreateStableActiveInvoiceForTable(t.tableid);
-        }
+        const isBooked = rawStatus === 'RESERVED' || rawStatus === 'BOOKED';
 
         return {
           ...t,
           status: isPlaying
             ? TableStatus.PLAYING
-            : (rawStatus === 'RESERVED' || rawStatus === 'BOOKED' ? TableStatus.RESERVED : TableStatus.EMPTY),
+            : (isBooked ? TableStatus.BOOKED : TableStatus.EMPTY),
           current_invoice_id: isPlaying && activeInvoice ? activeInvoice.invoiceid : null,
-          activeInvoice: activeInvoice || null,
+          activeInvoice: isPlaying ? activeInvoice : null,
         };
       })
     );
@@ -2062,8 +2078,18 @@ apiRouter.get('/supabase/status', async (req, res) => {
   }
 });
 
-// Mount router at both '/api' and '/' so Vercel rewrites work seamlessly
+// Catch-all 404 for API router
+apiRouter.use((req, res) => {
+  res.status(404).json({ success: false, error: `API endpoint không tồn tại: ${req.method} ${req.originalUrl || req.url}` });
+});
+
+// Error handling middleware for API router
+apiRouter.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error('API Error:', err);
+  res.status(500).json({ success: false, error: err?.message || 'Lỗi server nội bộ' });
+});
+
+// Mount router strictly at '/api'
 app.use('/api', apiRouter);
-app.use('/', apiRouter);
 
 export default app;

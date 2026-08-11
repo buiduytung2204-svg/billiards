@@ -47,12 +47,12 @@ export const TableCard: React.FC<TableCardProps> = ({ table, onOpenTable, onAddS
   } : null);
 
   // Realtime Live Timer Tick
-  const [timerFormatted, setTimerFormatted] = useState<string>('00:00:00');
+  const [timerFormatted, setTimerFormatted] = useState<string>('00:00');
   const [realtimeTableFee, setRealtimeTableFee] = useState<number>(0);
 
   useEffect(() => {
     if (!isPlaying || !activeInvoice?.starttime) {
-      setTimerFormatted('00:00:00');
+      setTimerFormatted('00:00');
       setRealtimeTableFee(0);
       return;
     }
